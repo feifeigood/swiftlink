@@ -1,0 +1,74 @@
+[package]
+name = "swiftlink-dns"
+version = "0.1.0"
+edition = "2021"
+authors = ["feifeigood <feifeigood91@gmail.com>"]
+
+[features]
+default = ["dns-over-tls", "dns-over-https", "dns-over-quic"]
+
+dns-over-tls = []
+dns-over-https = ["dns-over-https-rustls"]
+dns-over-quic = ["hickory-server/dns-over-quic"]
+
+dns-over-https-rustls = [
+    "hickory-proto/dns-over-https-rustls",
+    "hickory-resolver/dns-over-https-rustls",
+    "hickory-server/dns-over-https-rustls",
+]
+
+[dependencies]
+cfg-if = "1"
+thiserror = "1.0"
+anyhow = "1.0"
+url = "2.4.1"
+rand = "0.8.5"
+ipnet = { version = "2.9", features = ["serde"] }
+
+# serde
+serde = { version = "1.0", features = ["derive"] }
+serde_with = { version = "3.4" }
+
+# async/await
+futures = { version = "0.3.5", default-features = false, features = ["std"] }
+futures-intrusive = "0.5"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+async-trait = "0.1.43"
+tokio = { version = "1", features = [
+    "time",
+    "rt",
+    "signal",
+    "macros",
+    "parking_lot",
+] }
+
+# log
+tracing = "0.1"
+
+# hickory dns
+hickory-proto = { version = "0.24" }
+hickory-resolver = { version = "0.24", features = [
+    "serde-config",
+    "system-config",
+] }
+hickory-server = { version = "0.24", features = ["resolver"] }
+
+# ssl
+webpki-roots = "0.25.2"
+rustls = { version = "0.21.1", features = ["dangerous_configuration"] }
+rustls-pemfile = "1.0.2"
+rustls-native-certs = "0.6.2"
+
+# proxy
+fast-socks5 = "0.9.1"
+async-http-proxy = { version = "1.2.5", features = [
+    "runtime-tokio",
+    "basic-auth",
+] }
+
+# swiftlink
+swiftlink-net = { path = "../swiftlink-net" }
+swiftlink-infra = { path = "../swiftlink-infra" }
+
+[dev-dependencies]
+toml = "0.8"

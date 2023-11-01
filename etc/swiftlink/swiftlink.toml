@@ -1,0 +1,17 @@
+geoip_location = "GeoIP2-Country.mmdb"
+interface_name = "en0"
+
+log_file = "logs/swiftlink.log"
+log_level = "debug"
+log_max_file_size = "10mb"
+log_files = 3
+
+
+[dns]
+binds = [":5353 -tcp"]
+nameservers = ["223.5.5.5", "8.8.8.8"]
+use_hosts_file = true
+edns_client_subnet = "192.168.1.1/24"
+enhanced_mode = "fakeip"
+fake_ip_range = "198.18.0.1/16"
+fake_ip_filter = ["zenlayer.com", ".zenlayer.com"]
