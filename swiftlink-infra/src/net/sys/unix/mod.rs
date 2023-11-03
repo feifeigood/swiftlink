@@ -6,7 +6,10 @@ use std::{
 use cfg_if::cfg_if;
 use socket2::{Socket, TcpKeepalive};
 
-use crate::net::{options::TcpSocketOpts, ConnectOpts};
+use crate::{
+    log,
+    net::{options::TcpSocketOpts, ConnectOpts},
+};
 
 cfg_if! {
     if #[cfg(any(target_os = "linux", target_os = "android"))] {
