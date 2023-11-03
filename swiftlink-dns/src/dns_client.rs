@@ -24,18 +24,19 @@ use hickory_resolver::{
     name_server::GenericConnector,
     IntoName, Name, TryParseIp,
 };
-use swiftlink_net::ConnectOpts;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+
+use swiftlink_infra::log::{debug, info, warn};
+use swiftlink_net::ConnectOpts;
 
 use crate::{
-    dns::MAX_TTL,
     dns_client::bootstrap::BootstrapResolver,
     dns_conf::NameServerInfo,
     dns_error::LookupError,
     dns_url::{DnsUrl, DnsUrlParamExt},
     proxy::ProxyConfig,
     rustls::TlsClientConfigBundle,
+    MAX_TTL,
 };
 
 use connection_provider::TokioRuntimeProvider;
@@ -435,8 +436,8 @@ impl NameServerFactory {
         &self,
         url: &VerifiedDnsUrl,
         proxy: Option<ProxyConfig>,
-        connect_opts: ConnectOpts,
         resolver_opts: NameServerOpts,
+        connect_opts: ConnectOpts,
     ) -> Arc<NameServer> {
         use hickory_resolver::name_server::NameServer as N;
 
@@ -590,8 +591,8 @@ impl NameServerFactory {
                     self.create(
                         &url,
                         proxy.clone(),
-                        Default::default(),
                         nameserver_opts.clone(),
+                        Default::default(),
                     )
                     .await,
                 )

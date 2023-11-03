@@ -18,15 +18,15 @@ use hickory_server::{
 use swiftlink_infra::log::*;
 use swiftlink_infra::ServerOpts;
 
-use crate::{dns::DnsRequest, dns_error::LookupError, dns_handle::DnsHandler};
+use crate::{dns_error::LookupError, dns_handle::DnsRequestHandler, DnsRequest};
 
 pub struct DnsServerHandler {
-    handler: Arc<DnsHandler>,
+    handler: Arc<DnsRequestHandler>,
     server_opts: ServerOpts,
 }
 
 impl DnsServerHandler {
-    pub fn new(handler: Arc<DnsHandler>, server_opts: ServerOpts) -> Self {
+    pub fn new(handler: Arc<DnsRequestHandler>, server_opts: ServerOpts) -> Self {
         Self {
             handler,
             server_opts,

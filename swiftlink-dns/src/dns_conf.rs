@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use ipnet::IpNet;
 use serde::Deserialize;
@@ -7,12 +7,15 @@ use tracing::warn;
 
 use swiftlink_infra::{parse, Listener};
 
-use crate::dns_url::{DnsUrl, DnsUrlParamExt};
+use crate::{
+    dns_url::{DnsUrl, DnsUrlParamExt},
+    proxy::ProxyConfig,
+};
 
 #[derive(Deserialize, Default, Clone)]
 #[serde(default)]
 #[serde_as]
-pub struct Config {
+pub struct DnsConfig {
     /// dns server bind ip and port, default dns server port is 53, support binding multi ip and port
     binds: Vec<Listener>,
 
@@ -22,7 +25,7 @@ pub struct Config {
     tcp_idle_time: Option<u64>,
 
     /// remote dns server list
-    nameservers: Vec<NameServerInfo>,
+    servers: Vec<NameServerInfo>,
 
     /// check /etc/hosts file before dns request (only works for unix like OS)
     use_hosts_file: bool,
@@ -36,15 +39,32 @@ pub struct Config {
     ///   edns-client-subnet 8::8/56
     /// ```
     edns_client_subnet: Option<IpNet>,
+
+    /// The proxy server for upstream querying.
+    #[serde_as(as = "Arc<HashMap<_,DisplayFromStr>>")]
+    proxy_servers: Arc<HashMap<String, ProxyConfig>>,
 }
 
-impl Config {
+impl DnsConfig {
     pub fn binds(&self) -> &[Listener] {
         &self.binds
     }
 
     pub fn tcp_idle_time(&self) -> u64 {
         self.tcp_idle_time.unwrap_or(120)
+    }
+
+    pub fn servers(&self) -> &[NameServerInfo] {
+        &self.servers
+    }
+
+    pub fn proxies(&self) -> &Arc<HashMap<String, ProxyConfig>> {
+        &self.proxy_servers
+    }
+
+    #[inline]
+    pub fn edns_client_subnet(&self) -> Option<IpNet> {
+        self.edns_client_subnet
     }
 }
 
@@ -175,15 +195,17 @@ mod tests {
     use hickory_resolver::config::Protocol;
     use swiftlink_infra::IListener;
 
+    use crate::proxy::ProxyProtocol;
+
     use super::*;
 
     #[test]
     fn test_config_bind_with_device() {
         let cfg_str = r#"
-        binds = ["0.0.0.0:4453@eth0"]
+        binds = ["0.0.0.0:4453@eth0 -udp"]
         "#;
 
-        let cfg: Config = toml::from_str(&cfg_str).unwrap();
+        let cfg: DnsConfig = toml::from_str(&cfg_str).unwrap();
 
         assert_eq!(cfg.binds().len(), 1);
 
@@ -197,14 +219,14 @@ mod tests {
     #[test]
     fn test_config_nameserver() {
         let cfg_str = r#"
-        servers = ["https://223.5.5.5/dns-query -bootstrap-dns"]
+        servers = ["https://223.5.5.5/dns-query -bootstrap-dns -proxy mysocks5"]
         "#;
 
-        let cfg: Config = toml::from_str(&cfg_str).unwrap();
+        let cfg: DnsConfig = toml::from_str(&cfg_str).unwrap();
 
-        assert_eq!(cfg.nameservers.len(), 1);
+        assert_eq!(cfg.servers.len(), 1);
 
-        let server = cfg.nameservers.get(0).unwrap();
+        let server = cfg.servers.get(0).unwrap();
         assert_eq!(server.url.proto(), &Protocol::Https);
         assert_eq!(server.url.to_string(), "https://223.5.5.5/dns-query");
         assert_eq!(server.bootstrap_dns, true);
@@ -216,12 +238,48 @@ mod tests {
         edns_client_subnet = "192.168.1.1/24"
         "#;
 
-        let cfg: Config = toml::from_str(&cfg_str).unwrap();
+        let cfg: DnsConfig = toml::from_str(&cfg_str).unwrap();
 
         assert!(cfg.edns_client_subnet.is_some());
 
         let edns_client_subnet = cfg.edns_client_subnet.unwrap();
         assert!(edns_client_subnet.contains(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
         assert_eq!(Ok(edns_client_subnet.netmask()), "255.255.255.0".parse());
+    }
+
+    #[test]
+    fn test_config_proxy_server() {
+        let cfg_str = r#"
+        [proxy_servers]
+        mysocks5proxy = "socks5://user:pass@1.2.3.4:1080"
+        myhttpproxy = "http://user:pass@1.2.3.4:3128"
+        "#;
+
+        let cfg: DnsConfig = toml::from_str(&cfg_str).unwrap();
+
+        let proxies = cfg.proxies();
+
+        assert!(proxies.len() == 2);
+        assert_eq!(
+            proxies.get("mysocks5proxy").unwrap().proto,
+            ProxyProtocol::Socks5
+        );
+        assert_eq!(
+            proxies.get("mysocks5proxy").unwrap().username,
+            Some("user".to_string())
+        );
+        assert_eq!(
+            proxies.get("mysocks5proxy").unwrap().password,
+            Some("pass".to_string())
+        );
+        assert_eq!(
+            proxies.get("mysocks5proxy").unwrap().server,
+            "1.2.3.4:1080".parse().unwrap()
+        );
+
+        assert_eq!(
+            proxies.get("myhttpproxy").unwrap().proto,
+            ProxyProtocol::Http
+        );
     }
 }

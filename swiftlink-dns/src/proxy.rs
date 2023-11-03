@@ -2,6 +2,7 @@ use anyhow::Context;
 use fast_socks5::{
     client::Socks5Stream, util::target_addr::ToTargetAddr, AuthenticationMethod, Socks5Command,
 };
+use serde_with::DeserializeFromStr;
 use std::{
     fmt::{Display, Write},
     io,
@@ -185,7 +186,8 @@ impl tokio::io::AsyncWrite for TcpStream {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+// #[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, DeserializeFromStr)]
 pub struct ProxyConfig {
     pub proto: ProxyProtocol,
     pub server: SocketAddr,

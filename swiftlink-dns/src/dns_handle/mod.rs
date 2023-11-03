@@ -6,12 +6,14 @@ use hickory_proto::{
     rr::{rdata::SOA, Record},
 };
 use hickory_resolver::{error::ResolveErrorKind, Name};
+
 use swiftlink_infra::ServerOpts;
 
-use crate::{
-    dns::{DnsContext, DnsError, DnsRequest, DnsResponse, MAX_TTL},
-    Config,
-};
+use crate::{DnsConfig, DnsContext, DnsError, DnsRequest, DnsResponse, MAX_TTL};
+
+pub use forward::ForwardRequestHandle;
+
+mod forward;
 
 #[async_trait::async_trait]
 pub trait DnsRequestHandle: 'static + Send + Sync {
@@ -71,11 +73,11 @@ impl<'a> NextDnsRequestHandle<'a> {
     }
 }
 
-pub struct DnsHandlerBuilder {
+pub struct DnsRequestHandlerBuilder {
     handle_stack: Vec<Arc<dyn DnsRequestHandle>>,
 }
 
-impl DnsHandlerBuilder {
+impl DnsRequestHandlerBuilder {
     pub fn new() -> Self {
         Self {
             handle_stack: Default::default(),
@@ -97,20 +99,21 @@ impl DnsHandlerBuilder {
     }
 
     #[inline]
-    pub fn build(self, cfg: Arc<Config>) -> DnsHandler {
-        DnsHandler {
+    pub fn build(self, cfg: Arc<DnsConfig>) -> DnsRequestHandler {
+        // TODO: init handle
+        DnsRequestHandler {
             cfg,
             handle_stack: self.handle_stack.into_boxed_slice(),
         }
     }
 }
 
-pub struct DnsHandler {
-    cfg: Arc<Config>,
+pub struct DnsRequestHandler {
+    cfg: Arc<DnsConfig>,
     handle_stack: Box<[Arc<dyn DnsRequestHandle>]>,
 }
 
-impl DnsHandler {
+impl DnsRequestHandler {
     pub async fn search(
         &self,
         req: &DnsRequest,

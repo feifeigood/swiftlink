@@ -1,12 +1,14 @@
 use anyhow::{bail, Context};
 use byte_unit::Byte;
 use cfg_if::cfg_if;
+use serde::Deserialize;
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
-use serde::Deserialize;
+use swiftlink_dns::DnsConfig;
 use swiftlink_infra::{file_mode::FileMode, log};
 
 #[derive(Deserialize, Default)]
@@ -18,7 +20,7 @@ pub struct Config {
     log_max_file_size: Option<Byte>,
     log_files: Option<u64>,
 
-    dns: Option<swiftlink_dns::Config>,
+    dns: Option<Arc<DnsConfig>>,
 
     // Hold source path for config reload
     #[serde(skip)]
@@ -40,7 +42,7 @@ impl Config {
     }
 
     fn load(contents: &str) -> anyhow::Result<Self> {
-        toml::de::from_str(contents).with_context(|| "Failed to deserialize config".to_string())
+        toml::de::from_str(contents).with_context(|| "Failed to load config".to_string())
     }
 
     pub fn summary(&self) {
@@ -49,7 +51,7 @@ impl Config {
     }
 
     #[inline]
-    pub fn dns(&self) -> swiftlink_dns::Config {
+    pub fn dns(&self) -> Arc<DnsConfig> {
         self.dns.as_ref().map(|dns| dns.clone()).unwrap_or_default()
     }
 

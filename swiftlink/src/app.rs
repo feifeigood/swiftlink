@@ -4,13 +4,16 @@ use anyhow::Context;
 use futures_util::future::join_all;
 use tokio::{runtime::Runtime, sync::RwLock};
 
-use crate::{conf::Config, error::Error, rt};
-use swiftlink_dns::{DnsHandler, DnsHandlerBuilder, DnsServerHandler, ServerFuture};
+use swiftlink_dns::{
+    DnsRequestHandler, DnsRequestHandlerBuilder, DnsServerFuture, DnsServerHandler,
+};
 use swiftlink_infra::{bind_to, log, tcp, udp, IListener, Listener};
+
+use crate::{conf::Config, error::Error, rt};
 
 pub struct App {
     cfg: RwLock<Arc<Config>>,
-    dns_handler: RwLock<Arc<DnsHandler>>,
+    dns_handler: RwLock<Arc<DnsRequestHandler>>,
     listener_map: Arc<RwLock<HashMap<Listener, ServerTasks>>>,
     runtime: Runtime,
     guard: AppGuard,
@@ -60,8 +63,6 @@ impl App {
         fdlimit::raise_fd_limit();
 
         self.runtime.block_on(self.register_listeners());
-
-        log::info!("awaiting connections...");
 
         log::info!("server starting up");
 
@@ -131,13 +132,13 @@ async fn create_dns_server(app: &App, listener: &Listener) -> Result<ServerTasks
     let server = match listener {
         Listener::Udp(listener) => {
             let udp_socket = bind_to(udp, listener.sock_addr(), listener.device(), "UDP");
-            let mut server = ServerFuture::new(server_handler);
+            let mut server = DnsServerFuture::new(server_handler);
             server.register_socket(udp_socket);
             ServerTasks::Dns(server)
         }
         Listener::Tcp(listener) => {
             let tcp_listener = bind_to(tcp, listener.sock_addr(), listener.device(), "TCP");
-            let mut server = ServerFuture::new(server_handler);
+            let mut server = DnsServerFuture::new(server_handler);
             server.register_listener(tcp_listener, Duration::from_secs(tcp_idle_time));
 
             ServerTasks::Dns(server)
@@ -147,14 +148,19 @@ async fn create_dns_server(app: &App, listener: &Listener) -> Result<ServerTasks
     Ok(server)
 }
 
-fn create_dns_server_handler(cfg: Arc<Config>, runtime: &Runtime) -> DnsHandler {
+fn create_dns_server_handler(cfg: Arc<Config>, runtime: &Runtime) -> DnsRequestHandler {
+    use swiftlink_dns::ForwardRequestHandle;
+
     let _guard = runtime.enter();
 
-    let builder = DnsHandlerBuilder::new();
+    let mut builder = DnsRequestHandlerBuilder::new();
 
     // TODO: add handle
+    builder = builder.with(ForwardRequestHandle::new(
+        runtime.block_on(cfg.dns().create_dns_client()),
+    ));
 
-    builder.build(Arc::new(cfg.dns()))
+    builder.build(cfg.dns())
 }
 
 struct AppGuard {
@@ -162,7 +168,7 @@ struct AppGuard {
 }
 
 enum ServerTasks {
-    Dns(ServerFuture<DnsServerHandler>),
+    Dns(DnsServerFuture<DnsServerHandler>),
 }
 
 impl ServerTasks {

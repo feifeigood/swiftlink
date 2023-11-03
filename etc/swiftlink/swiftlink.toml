@@ -6,12 +6,15 @@ log_level = "debug"
 log_max_file_size = "10mb"
 log_files = 3
 
-
 [dns]
-binds = [":5353 -tcp"]
-nameservers = ["223.5.5.5", "8.8.8.8"]
-use_hosts_file = true
+binds = ["0.0.0.0:53 -udp", "0.0.0.0:53 -tcp"]
+servers = ["223.5.5.5", "8.8.8.8"]
 edns_client_subnet = "192.168.1.1/24"
-enhanced_mode = "fakeip"
-fake_ip_range = "198.18.0.1/16"
+use_hosts_file = true
+fake_ip = true
+fake_ip_range = "198.18.0.0/15"
+fake_ip6_range = "fc00::/18"
 fake_ip_filter = ["zenlayer.com", ".zenlayer.com"]
+[dns.proxy_servers]
+mysocks5proxy = "socks5://user:pass@1.2.3.4:1080"
+myhttpproxy = "http://user:pass@1.2.3.4:3128"

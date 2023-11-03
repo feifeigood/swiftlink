@@ -16,6 +16,17 @@ pub enum Listener {
     Tcp(TcpListener),
 }
 
+impl Default for Listener {
+    fn default() -> Self {
+        Self::Tcp(TcpListener {
+            listen: ListenerAddress::Any,
+            port: 80,
+            device: None,
+            opts: ServerOpts::default(),
+        })
+    }
+}
+
 #[enum_dispatch]
 pub trait IListener {
     fn listen(&self) -> ListenerAddress;
