@@ -8,7 +8,7 @@ use socket2::{SockAddr, Socket};
 use tokio::net::TcpSocket;
 use tracing::{debug, warn};
 
-use crate::ConnectOpts;
+use super::ConnectOpts;
 
 cfg_if! {
     if #[cfg(unix)] {

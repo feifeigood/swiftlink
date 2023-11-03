@@ -11,12 +11,13 @@ use std::{
     pin::Pin,
     str::FromStr,
 };
-use swiftlink_net::{tcp::connect_tcp_with_opts, ConnectOpts};
 use tokio::net::TcpStream as TokioTcpStream;
-use tracing::info;
 
 use thiserror::Error;
 use url::{ParseError, Url};
+
+use swiftlink_infra::log::info;
+use swiftlink_infra::net::{tcp::connect_tcp_with_opts, ConnectOpts};
 
 pub async fn connect_tcp(
     server_addr: SocketAddr,

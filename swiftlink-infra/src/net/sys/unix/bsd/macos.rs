@@ -13,7 +13,7 @@ use socket2::Socket;
 use tokio::net::{TcpSocket, TcpStream};
 use tracing::error;
 
-use crate::{
+use crate::net::{
     sys::{set_common_sockopt_after_connect, set_common_sockopt_for_connect},
     ConnectOpts,
 };

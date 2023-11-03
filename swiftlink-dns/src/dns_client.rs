@@ -27,7 +27,7 @@ use hickory_resolver::{
 use tokio::sync::RwLock;
 
 use swiftlink_infra::log::{debug, info, warn};
-use swiftlink_net::ConnectOpts;
+use swiftlink_infra::net::ConnectOpts;
 
 use crate::{
     dns_client::bootstrap::BootstrapResolver,
@@ -943,7 +943,7 @@ mod connection_provider {
 
     use hickory_proto::{iocompat::AsyncIoTokioAsStd, TokioTime};
     use hickory_resolver::{name_server::RuntimeProvider, TokioHandle};
-    use swiftlink_net::ConnectOpts;
+    use swiftlink_infra::net::ConnectOpts;
 
     use crate::proxy::{self, ProxyConfig, TcpStream};
     use tokio::net::UdpSocket as TokioUdpSocket;

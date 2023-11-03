@@ -5,6 +5,8 @@ edition = "2021"
 authors = ["feifeigood <feifeigood91@gmail.com>"]
 
 [dependencies]
+libc = "0.2.141"
+cfg-if = "1"
 chrono = "0.4"
 enum_dispatch = "0.3.12"
 
