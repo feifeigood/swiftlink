@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["feifeigood <feifeigood91@gmail.com>"]
 description = """
-A rule-based tunnel written in Rust
+A experimental tunnel written in Rust
 """
 
 [features]
