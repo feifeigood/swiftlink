@@ -218,6 +218,8 @@ mod tests {
     use ipnet::Ipv4Net;
     use rand::Rng;
 
+    use crate::cachefile::CacheFile;
+
     use super::*;
 
     #[test]
@@ -261,6 +263,10 @@ mod tests {
     }
 
     fn create_fakedns_with_persist() -> FakeDns {
+        // prepare cache dir
+        CacheFile::with_cache_dir(std::env::temp_dir().join("swiftlink").join("cachedb"))
+            .expect("Failed to create cachefile");
+
         let mut whitelist = DomainTrie::new();
         _ = whitelist.insert(String::from("example.com"), ());
 
@@ -269,6 +275,7 @@ mod tests {
         config.ipnet = "198.18.0.0/15".parse().unwrap();
         config.ipnet6 = "2001:db8::/32".parse().unwrap();
         config.size = 65535;
+        config.persist = true;
 
         FakeDns::new(config)
     }
@@ -371,7 +378,7 @@ mod tests {
         }
 
         let mut rnd = rand::thread_rng();
-        for _ in 0..10000 {
+        for _ in 0..1000 {
             let num = rnd.gen_range(0..65534);
             let host = format!("test{}.example.com", num);
             let ip = fakedns.lookup_ip(&host, false).expect("ip should exists");

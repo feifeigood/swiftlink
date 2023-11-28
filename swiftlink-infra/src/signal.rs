@@ -5,8 +5,8 @@ pub async fn shutdown() {
 
 #[cfg(unix)]
 mod imp {
+    use crate::log::info;
     use tokio::signal::unix::{signal, SignalKind};
-    use tracing::info;
 
     pub(super) async fn shutdown() {
         tokio::select! {
@@ -33,7 +33,7 @@ mod imp {
 
 #[cfg(not(unix))]
 mod imp {
-    use tracing::info;
+    use crate::log::info;
 
     pub(super) async fn shutdown() {
         // On Windows, we don't have all the signals, but Windows also
