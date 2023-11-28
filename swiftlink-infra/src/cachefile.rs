@@ -1,4 +1,4 @@
-use std::{fs, io, net::IpAddr, path::Path, sync::Arc};
+use std::{fmt::Debug, fs, io, net::IpAddr, path::Path, sync::Arc};
 
 use once_cell::sync::OnceCell;
 use rocksdb::{BoundColumnFamily, MultiThreaded, Transaction, TransactionDB};
@@ -164,6 +164,12 @@ impl CacheFile {
         }
 
         Ok(())
+    }
+}
+
+impl Debug for CacheFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CacheFile")
     }
 }
 
