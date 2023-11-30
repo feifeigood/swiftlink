@@ -86,7 +86,13 @@ impl FakeDns {
         total = total - 2;
 
         let store = if config.persist {
-            FakeIPStore::CacheFile(CacheFileStore::new())
+            match CacheFileStore::new() {
+                Ok(store) => FakeIPStore::CacheFile(store),
+                Err(_) => {
+                    warn!("Failed to create cachefile, fallback to memory");
+                    FakeIPStore::Memory(MemoryStore::new(config.size))
+                }
+            }
         } else {
             FakeIPStore::Memory(MemoryStore::new(config.size))
         };
@@ -100,7 +106,7 @@ impl FakeDns {
             store,
         };
 
-        trace!("create fakedns: {:?}", fakedns);
+        debug!("create fakedns: {:?}", fakedns);
 
         fakedns
     }
