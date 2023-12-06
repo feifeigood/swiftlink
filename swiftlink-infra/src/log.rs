@@ -71,7 +71,7 @@ fn make_dispatch<W: for<'writer> MakeWriter<'writer> + 'static + Send + Sync>(
     writer: W,
 ) -> Dispatch {
     let fmt = tracing_subscriber::fmt::format()
-        .with_thread_ids(true)
+        // .with_thread_ids(true)
         .with_file(true)
         .with_line_number(true);
     let layer = tracing_subscriber::fmt::layer()
@@ -86,8 +86,8 @@ fn make_dispatch<W: for<'writer> MakeWriter<'writer> + 'static + Send + Sync>(
 }
 
 fn console_level() -> Level {
-    if std::env::args().any(|arg| arg == "--debug") {
-        tracing::Level::DEBUG
+    if std::env::args().any(|arg| arg == "--verbose") {
+        tracing::Level::TRACE
     } else {
         tracing::Level::INFO
     }
