@@ -1,12 +1,13 @@
 use std::{
     collections::BTreeMap,
+    fmt::Debug,
     hash::Hash,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     str::FromStr,
 };
-
-use hickory_resolver::config::Protocol;
 use url::{Host, Url};
+
+use crate::libdns::resolver::config::Protocol;
 
 /// alias: system、google、cloudflare、quad9
 /// udp://8.8.8.8 or 8.8.8.8 or [240e:1f:1::1]  => traditional dns server
@@ -262,10 +263,7 @@ fn dns_proto_default_port(proto: &Protocol) -> u16 {
         Tls => 853,
         Https => 443,
         Quic => 853,
-        #[cfg(feature = "mdns")]
-        #[cfg_attr(docsrs, doc(cfg(feature = "mdns")))]
-        Mdns => 5353,
-        _ => todo!(),
+        _ => unimplemented!(),
     }
 }
 
@@ -330,8 +328,7 @@ impl DnsUrlParamExt for DnsUrl {}
 #[cfg(test)]
 mod tests {
 
-    use hickory_resolver::config::Protocol;
-
+    use crate::libdns::resolver::config::Protocol;
     use crate::preset_ns::CLOUDFLARE_IPS;
 
     use super::*;

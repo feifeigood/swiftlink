@@ -1,85 +1,44 @@
 use std::{
     io,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     str::FromStr,
 };
 
-use enum_dispatch::enum_dispatch;
 use serde_with::DeserializeFromStr;
 
 use crate::{log::*, parse};
 
-#[enum_dispatch(IListener)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, DeserializeFromStr)]
-pub enum Listener {
-    Udp(UdpListener),
-    Tcp(TcpListener),
+pub struct Listener {
+    sock_addr: SocketAddr,
+    device: Option<String>,
+}
+
+impl Listener {
+    pub fn sock_addr(&self) -> SocketAddr {
+        self.sock_addr
+    }
+
+    pub fn device(&self) -> Option<&str> {
+        self.device.as_deref()
+    }
 }
 
 impl Default for Listener {
     fn default() -> Self {
-        Self::Tcp(TcpListener {
-            listen: ListenerAddress::Any,
-            port: 80,
+        Listener {
+            sock_addr: SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0).into(),
             device: None,
-            opts: ServerOpts::default(),
-        })
-    }
-}
-
-#[enum_dispatch]
-pub trait IListener {
-    fn listen(&self) -> ListenerAddress;
-    fn mut_listen(&mut self) -> &mut ListenerAddress;
-    fn port(&self) -> u16;
-    fn device(&self) -> Option<&str>;
-    fn server_opts(&self) -> &ServerOpts;
-    fn sock_addr(&self) -> SocketAddr {
-        match self.listen() {
-            ListenerAddress::Localhost => {
-                SocketAddrV4::new(Ipv4Addr::LOCALHOST, self.port()).into()
-            }
-            ListenerAddress::Any => SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, self.port()).into(),
-            ListenerAddress::V4(ip) => (ip, self.port()).into(),
-            ListenerAddress::V6(ip) => (ip, self.port()).into(),
         }
     }
 }
 
-/// server bind ip and port
-/// bind udp server
-///   bind [IP]:[port]@device -udp
-/// bind tcp server
-///   bind [IP]:[port]@device
 impl FromStr for Listener {
     type Err = std::io::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut parts = parse::split_options(s, ' ');
-
-        let mut addr = None;
+        let mut addr = Some(s);
         let mut device = None;
-        let mut server_kind = None;
-
-        while let Some(part) = parts.next() {
-            if part.starts_with('-') {
-                match part {
-                    "-udp" | "--udp" => {
-                        server_kind = Some("udp");
-                    }
-                    "-tcp" | "--tcp" => {
-                        server_kind = Some("tcp");
-                    }
-                    opt => {
-                        warn!("unknown option: {}", opt);
-                    }
-                }
-            } else if addr.is_none() {
-                addr = Some(part);
-            } else {
-                error!("unexpected options: {}", part);
-            }
-        }
 
         if let Some(s) = addr {
             if let Some(at_idx) = s.find('@') {
@@ -98,108 +57,9 @@ impl FromStr for Listener {
                 )
             })?;
 
-        let listener = match server_kind {
-            Some(kind) if kind == "udp" => Self::Udp(UdpListener {
-                listen: sock_addr.ip().into(),
-                port: sock_addr.port(),
-                device,
-                opts: ServerOpts::default(),
-            }),
-            _ => Self::Tcp(TcpListener {
-                listen: sock_addr.ip().into(),
-                port: sock_addr.port(),
-                device,
-                opts: ServerOpts::default(),
-            }),
-        };
-
-        Ok(listener)
+        Ok(Listener { sock_addr, device })
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct UdpListener {
-    /// listen adress
-    pub listen: ListenerAddress,
-    /// listen port
-    pub port: u16,
-    /// bind network device.
-    pub device: Option<String>,
-    /// the server options
-    pub opts: ServerOpts,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TcpListener {
-    /// listen adress
-    pub listen: ListenerAddress,
-    /// listen port
-    pub port: u16,
-    /// bind network device.
-    pub device: Option<String>,
-    /// the server options
-    pub opts: ServerOpts,
-}
-
-macro_rules! impl_listener {
-    ($($name:ident),+) => {
-        $(
-            impl IListener for $name {
-                fn listen(&self) -> ListenerAddress {
-                    self.listen
-                }
-                fn mut_listen(&mut self) -> &mut ListenerAddress {
-                    &mut self.listen
-                }
-
-                fn port(&self) -> u16 {
-                    self.port
-                }
-                fn device(&self) -> Option<&str> {
-                    self.device.as_deref()
-                }
-
-                fn server_opts(&self) -> &ServerOpts {
-                    &self.opts
-                }
-            }
-        )+
-    }
-}
-
-impl_listener!(UdpListener, TcpListener);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ListenerAddress {
-    Localhost,
-    Any,
-    V4(Ipv4Addr),
-    V6(Ipv6Addr),
-}
-
-impl From<IpAddr> for ListenerAddress {
-    fn from(value: IpAddr) -> Self {
-        match value {
-            IpAddr::V4(ip) => ListenerAddress::V4(ip),
-            IpAddr::V6(ip) => ListenerAddress::V6(ip),
-        }
-    }
-}
-
-impl ListenerAddress {
-    // Returns the ip addr of this [`ListenerAddress`]
-    fn ip_addr(self) -> IpAddr {
-        match self {
-            ListenerAddress::Localhost => IpAddr::V4(Ipv4Addr::LOCALHOST),
-            ListenerAddress::Any => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            ListenerAddress::V4(ip) => ip.into(),
-            ListenerAddress::V6(ip) => ip.into(),
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-pub struct ServerOpts {}
 
 pub fn bind_to<T>(
     func: impl Fn(SocketAddr, Option<&str>, &str) -> io::Result<T>,
@@ -295,6 +155,3 @@ pub fn udp(
 
     Ok(udp_socket)
 }
-
-#[cfg(test)]
-mod tests {}

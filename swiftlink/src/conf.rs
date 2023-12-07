@@ -9,10 +9,13 @@ use std::{
 };
 
 use swiftlink_dns::DnsConfig;
-use swiftlink_infra::{file_mode::FileMode, log};
+use swiftlink_infra::{file_mode::FileMode, log::info};
 
 #[derive(Deserialize, Default)]
 pub struct Config {
+    interface_name: Option<String>,
+    ipv6_first: bool,
+
     log_level: Option<String>,
     log_file: Option<PathBuf>,
     log_file_mode: Option<FileMode>,
@@ -20,7 +23,7 @@ pub struct Config {
     log_max_file_size: Option<Byte>,
     log_files: Option<u64>,
 
-    dns: Option<Arc<DnsConfig>>,
+    dns: DnsConfig,
 
     // Hold source path for config reload
     #[serde(skip)]
@@ -47,12 +50,7 @@ impl Config {
 
     pub fn summary(&self) {
         // TODO: print config summary
-        log::info!("Using configuration file: {:?}", self.source_conf_path);
-    }
-
-    #[inline]
-    pub fn dns(&self) -> Arc<DnsConfig> {
-        self.dns.as_ref().map(|dns| dns.clone()).unwrap_or_default()
+        info!("Using configuration file: {:?}", self.source_conf_path);
     }
 
     #[inline]
@@ -111,5 +109,10 @@ impl Config {
     #[inline]
     pub fn log_max_files(&self) -> u64 {
         self.log_files.unwrap_or(2)
+    }
+
+    #[inline]
+    pub fn dns(&self) -> Arc<DnsConfig> {
+        Arc::new(self.dns.clone())
     }
 }

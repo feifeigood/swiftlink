@@ -1,41 +1,82 @@
 use cfg_if::cfg_if;
 use futures_util::Future;
-use std::{io, sync::Arc};
-
-use hickory_proto::{
-    op::{Edns, Header, MessageType, OpCode, ResponseCode},
-    rr::Record,
+use std::{
+    io,
+    sync::{Arc, Mutex},
 };
-use hickory_server::{
-    authority::{
-        AuthLookup, EmptyLookup, LookupObject, LookupOptions, MessageResponse,
-        MessageResponseBuilder, ZoneType,
+
+use swiftlink_infra::{fakedns, log::*};
+
+use crate::{
+    client::DnsClient,
+    dns_handle::*,
+    error::LookupError,
+    libdns::{
+        proto::{
+            op::{Edns, Header, MessageType, OpCode, ResponseCode},
+            rr::Record,
+        },
+        server::{
+            authority::{
+                AuthLookup, EmptyLookup, LookupObject, LookupOptions, MessageResponse,
+                MessageResponseBuilder, ZoneType,
+            },
+            server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
+            store::forwarder::ForwardLookup,
+        },
     },
-    server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
-    store::forwarder::ForwardLookup,
+    DnsConfig, DnsRequest,
 };
 
-use swiftlink_infra::log::*;
-use swiftlink_infra::ServerOpts;
-
-use crate::{dns_error::LookupError, dns_handle::DnsRequestHandler, DnsRequest};
-
-pub struct DnsServerHandler {
-    handler: Arc<DnsRequestHandler>,
-    server_opts: ServerOpts,
+pub struct ServerHandleBuilder {
+    config: Arc<DnsConfig>,
+    client: Arc<DnsClient>,
+    fakedns: Option<Arc<Mutex<fakedns::FakeDns>>>,
 }
 
-impl DnsServerHandler {
-    pub fn new(handler: Arc<DnsRequestHandler>, server_opts: ServerOpts) -> Self {
-        Self {
-            handler,
-            server_opts,
+impl ServerHandleBuilder {
+    pub fn new(config: Arc<DnsConfig>, client: Arc<DnsClient>) -> ServerHandleBuilder {
+        ServerHandleBuilder {
+            config,
+            client,
+            fakedns: None,
         }
+    }
+
+    pub fn with_fakedns(mut self, fakedns: Arc<Mutex<fakedns::FakeDns>>) -> Self {
+        self.fakedns = Some(fakedns);
+        self
+    }
+
+    pub fn build(self) -> ServerHandle {
+        let mut builder = DnsRequestHandlerBuilder::new();
+
+        if let Some(fakedns) = self.fakedns {
+            builder = builder.with(FakeDnsHandle::new(fakedns));
+        }
+
+        let handler = Arc::new(
+            builder
+                .with(ForwardHandle::new(self.client))
+                .build(self.config),
+        );
+
+        ServerHandle { handler }
+    }
+}
+
+pub struct ServerHandle {
+    handler: Arc<DnsRequestHandler>,
+}
+
+impl ServerHandle {
+    pub fn new(handler: Arc<DnsRequestHandler>) -> Self {
+        Self { handler }
     }
 }
 
 #[async_trait::async_trait]
-impl RequestHandler for DnsServerHandler {
+impl RequestHandler for ServerHandle {
     async fn handle_request<R: ResponseHandler>(
         &self,
         request: &Request,
@@ -107,6 +148,7 @@ impl RequestHandler for DnsServerHandler {
                         let (response_header, sections) = async {
                             let lookup_options = lookup_options_for_edns(request.edns());
 
+                            // TODO: need remove this log?
                             // log algorithms being requested
                             if lookup_options.is_dnssec() {
                                 info!(
@@ -126,7 +168,7 @@ impl RequestHandler for DnsServerHandler {
                                 let req: &DnsRequest = &request.into();
 
                                 let lookup_result: Result<Box<dyn LookupObject>, LookupError> =
-                                    match self.handler.search(req, &self.server_opts).await {
+                                    match self.handler.search(req).await {
                                         Ok(lookup) => Ok(Box::new(ForwardLookup(lookup))),
                                         Err(err) => Err(err),
                                     };

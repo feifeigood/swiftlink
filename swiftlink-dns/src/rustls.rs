@@ -1,4 +1,5 @@
 use std::{
+    fmt::{self, Debug},
     fs::File,
     io::{self, BufReader},
     path::{Path, PathBuf},
@@ -7,7 +8,7 @@ use std::{
 
 use rustls::ClientConfig;
 use rustls_native_certs::Certificate;
-use tracing::warn;
+use swiftlink_infra::log::warn;
 
 #[derive(Clone)]
 pub struct TlsClientConfigBundle {
@@ -120,6 +121,12 @@ impl TlsClientConfigBundle {
     }
 }
 
+impl Debug for TlsClientConfigBundle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TlsClientConfigBundle {{ ... }}")
+    }
+}
+
 /// Load certificates from specific directory or file.
 pub fn load_certs_from_path(path: &Path) -> Result<Vec<Certificate>, io::Error> {
     if path.is_dir() {
@@ -144,7 +151,7 @@ fn load_pem_certs(path: &Path) -> Result<Vec<Certificate>, io::Error> {
         Ok(contents) => Ok(contents.into_iter().map(Certificate).collect()),
         Err(_) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("Could not load PEM file {:?}", path),
+            format!("Couldn't load PEM file {:?}", path),
         )),
     }
 }

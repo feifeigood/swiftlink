@@ -16,8 +16,10 @@ use tokio::net::TcpStream as TokioTcpStream;
 use thiserror::Error;
 use url::{ParseError, Url};
 
-use swiftlink_infra::log::info;
-use swiftlink_infra::net::{tcp::connect_tcp_with_opts, ConnectOpts};
+use swiftlink_infra::{
+    log::info,
+    net::{tcp::connect_tcp_with_opts, ConnectOpts},
+};
 
 pub async fn connect_tcp(
     server_addr: SocketAddr,

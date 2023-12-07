@@ -25,6 +25,7 @@ url = "2.4.1"
 rand = "0.8.5"
 ipnet = { version = "2.9", features = ["serde"] }
 toml = "0.8"
+enum_dispatch = "0.3.12"
 
 # serde
 serde = { version = "1.0", features = ["derive", "rc"] }

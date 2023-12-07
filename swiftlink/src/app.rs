@@ -1,40 +1,49 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use anyhow::Context;
 use futures_util::future::join_all;
 use tokio::{runtime::Runtime, sync::RwLock};
 
-use swiftlink_dns::{
-    DnsRequestHandler, DnsRequestHandlerBuilder, DnsServerFuture, DnsServerHandler,
+use swiftlink_dns::build_dns_resolver;
+use swiftlink_dns::{ServerHandle, ServerHandleBuilder};
+use swiftlink_infra::{
+    bind_to,
+    cachefile::CacheFile,
+    log::{self, *},
+    udp, Listener,
 };
-use swiftlink_infra::{bind_to, log, tcp, udp, IListener, Listener};
 
-use crate::{conf::Config, error::Error, rt};
+use crate::{conf::Config, context::AppContext, rt};
 
 pub struct App {
-    cfg: RwLock<Arc<Config>>,
-    dns_handler: RwLock<Arc<DnsRequestHandler>>,
+    config: Arc<Config>,
+    context: AppContext,
     listener_map: Arc<RwLock<HashMap<Listener, ServerTasks>>>,
     runtime: Runtime,
     guard: AppGuard,
 }
 
 impl App {
-    pub fn new(conf: PathBuf) -> anyhow::Result<Self> {
-        let cfg = Arc::new(
-            Config::load_from_file(&conf)
-                .with_context(|| format!("Error while loading config file: {:?}", conf))?,
+    pub fn new(config_path: PathBuf, home_dir: PathBuf) -> anyhow::Result<Self> {
+        let config = Arc::new(
+            Config::load_from_file(&config_path)
+                .with_context(|| format!("Error while loading config file: {:?}", config_path))?,
         );
 
         let guard = {
-            let log_guard = if cfg.log_enabled() {
+            let log_guard = if config.log_enabled() {
                 Some(log::init_global_default(
-                    cfg.log_file(),
-                    cfg.log_level(),
-                    cfg.log_filter(),
-                    cfg.log_size(),
-                    cfg.log_max_files(),
-                    cfg.log_file_mode().into(),
+                    config.log_file(),
+                    config.log_level(),
+                    config.log_filter(),
+                    config.log_size(),
+                    config.log_max_files(),
+                    config.log_file_mode().into(),
                 ))
             } else {
                 None
@@ -43,28 +52,88 @@ impl App {
             AppGuard { log_guard }
         };
 
-        cfg.summary();
+        config.summary();
+
+        // initialize cachefile
+        if let Err(err) = CacheFile::with_cache_dir(home_dir.join("cachedb")) {
+            warn!("Failed to initialize cachefile: {:?}", err);
+        }
 
         let runtime = rt::build();
+        let listener_map: Arc<RwLock<HashMap<Listener, ServerTasks>>> = Default::default();
+        let mut context = AppContext::default();
 
-        let dns_server_handler = create_dns_server_handler(cfg.clone(), &runtime);
+        {
+            let dns = config.dns();
+            if dns.enabled() {
+                if dns.fakeip() {
+                    use swiftlink_infra::fakedns::{Config, FakeDns};
+
+                    let mut conf = Config::default();
+                    conf.persist = dns.fakeip_persist();
+
+                    // using memory cache
+                    if !dns.fakeip_persist() {
+                        conf.size = dns.fakeip_size().unwrap_or(2048);
+                    }
+
+                    let (ipv4_range, ipv6_range) = dns.fakeip_range();
+                    if let Some(ipv4_range) = ipv4_range {
+                        conf.ipnet = ipv4_range;
+                    }
+                    if let Some(ipv6_range) = ipv6_range {
+                        conf.ipnet6 = ipv6_range;
+                    }
+
+                    // TODO: fakeip filter
+                    let fakedns = Arc::new(Mutex::new(FakeDns::new(conf)));
+                    context.set_fakedns(fakedns);
+                }
+            }
+
+            runtime.block_on(async {
+                let dns_resolver = build_dns_resolver(&dns).await;
+
+                // register local dns server
+                let listener = dns.listen();
+                let mut builder = ServerHandleBuilder::new(dns.clone(), dns_resolver.into());
+                if let Some(fakedns) = context.fakedns() {
+                    builder = builder.with_fakedns(fakedns);
+                }
+                let server_handle = builder.build();
+
+                let udp_socket = bind_to(udp, listener.sock_addr(), listener.device(), "UDP");
+                let mut server = swiftlink_dns::ServerFuture::new(server_handle);
+                server.register_socket(udp_socket);
+
+                if let Some(mut prev_server) = listener_map
+                    .write()
+                    .await
+                    .insert(listener.clone(), ServerTasks::Dns(server))
+                {
+                    tokio::spawn(async move {
+                        let _ = prev_server.shutdown(Duration::from_secs(5)).await;
+                    });
+                }
+            });
+        }
 
         Ok(Self {
-            cfg: RwLock::new(cfg),
-            dns_handler: RwLock::new(Arc::new(dns_server_handler)),
+            config,
+            context,
             listener_map: Default::default(),
             runtime,
             guard,
         })
     }
 
+    async fn register_inbound(&self) {}
+
     pub fn bootstrap(self) {
         // Raise `nofile` limit on Linux/MacOS
         fdlimit::raise_fd_limit();
 
-        self.runtime.block_on(self.register_listeners());
-
-        log::info!("server starting up");
+        info!("server starting up");
 
         let listeners = self.listener_map.clone();
 
@@ -76,7 +145,7 @@ impl App {
             let shutdown_tasks = listeners.iter_mut().map(|(_, server)| async move {
                 match server.shutdown(shutdown_timeout).await {
                     Ok(_) => (),
-                    Err(err) => log::warn!("{:?}", err),
+                    Err(err) => warn!("{:?}", err),
                 }
             });
 
@@ -85,82 +154,6 @@ impl App {
 
         self.runtime.shutdown_timeout(shutdown_timeout);
     }
-
-    async fn register_listeners(&self) {
-        let cfg = self.cfg.read().await;
-
-        let listener_map = self.listener_map.clone();
-
-        // create local dns server
-        {
-            let dns_conf = cfg.dns();
-            let listeners = dns_conf.binds();
-            for listener in listeners {
-                match create_dns_server(self, listener).await {
-                    Ok(server) => {
-                        if let Some(mut prev_server) =
-                            listener_map.write().await.insert(listener.clone(), server)
-                        {
-                            tokio::spawn(async move {
-                                let _ = prev_server.shutdown(Duration::from_secs(5)).await;
-                            });
-                        }
-                    }
-                    Err(err) => {
-                        log::error!("{}", err);
-                    }
-                }
-            }
-        }
-
-        // TODO: create socks server
-        // TODO: create http server
-        // TODO: create tun listener
-        // TODO: create admin api server
-    }
-}
-
-async fn create_dns_server(app: &App, listener: &Listener) -> Result<ServerTasks, Error> {
-    let handler = app.dns_handler.read().await.clone();
-
-    let server_handler = DnsServerHandler::new(handler, listener.server_opts().clone());
-
-    let cfg = app.cfg.read().await.dns();
-
-    let tcp_idle_time = cfg.tcp_idle_time();
-
-    let server = match listener {
-        Listener::Udp(listener) => {
-            let udp_socket = bind_to(udp, listener.sock_addr(), listener.device(), "UDP");
-            let mut server = DnsServerFuture::new(server_handler);
-            server.register_socket(udp_socket);
-            ServerTasks::Dns(server)
-        }
-        Listener::Tcp(listener) => {
-            let tcp_listener = bind_to(tcp, listener.sock_addr(), listener.device(), "TCP");
-            let mut server = DnsServerFuture::new(server_handler);
-            server.register_listener(tcp_listener, Duration::from_secs(tcp_idle_time));
-
-            ServerTasks::Dns(server)
-        }
-    };
-
-    Ok(server)
-}
-
-fn create_dns_server_handler(cfg: Arc<Config>, runtime: &Runtime) -> DnsRequestHandler {
-    use swiftlink_dns::ForwardRequestHandle;
-
-    let _guard = runtime.enter();
-
-    let mut builder = DnsRequestHandlerBuilder::new();
-
-    // TODO: add handle
-    builder = builder.with(ForwardRequestHandle::new(
-        runtime.block_on(cfg.dns().create_dns_client()),
-    ));
-
-    builder.build(cfg.dns())
 }
 
 struct AppGuard {
@@ -168,7 +161,7 @@ struct AppGuard {
 }
 
 enum ServerTasks {
-    Dns(DnsServerFuture<DnsServerHandler>),
+    Dns(swiftlink_dns::ServerFuture<ServerHandle>),
 }
 
 impl ServerTasks {

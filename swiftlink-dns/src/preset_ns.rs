@@ -1,20 +1,20 @@
-use std::net::IpAddr;
-use std::net::Ipv4Addr;
-use std::net::Ipv6Addr;
+#![allow(unused)]
+
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// IP addresses for Cloudflare's 1.1.1.1 DNS service
 /// Please see: https://cloudflare-dns.com/
-pub use hickory_resolver::config::CLOUDFLARE_IPS;
+pub use crate::libdns::resolver::config::CLOUDFLARE_IPS;
 pub const CLOUDFLARE: &str = "cloudflare-dns.com";
 
 /// IP addresses for Google Public DNS
 /// Please see: https://dns.google/
-pub use hickory_resolver::config::GOOGLE_IPS;
+pub use crate::libdns::resolver::config::GOOGLE_IPS;
 pub const GOOGLE: &str = "dns.google";
 
 /// IP address for the Quad9 DNS service
 /// Please see: https://www.quad9.net/
-pub use hickory_resolver::config::QUAD9_IPS;
+pub use crate::libdns::resolver::config::QUAD9_IPS;
 pub const QUAD9: &str = "dns.quad9.net";
 
 /// IP address for the Ali DNS service

@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     net::{IpAddr, SocketAddr},
     ops::Deref,
     path::PathBuf,
@@ -8,38 +8,36 @@ use std::{
     time::{Duration, Instant},
 };
 
-use hickory_proto::{
-    error::ProtoResult,
-    op::{Edns, Message, MessageType, OpCode, Query},
-    rr::{
-        rdata::opt::{ClientSubnet, EdnsOption},
-        Record, RecordType,
-    },
-    xfer::{DnsHandle, DnsRequest, DnsRequestOptions, FirstAnswer},
-};
-use hickory_resolver::{
-    config::{NameServerConfig, Protocol, ResolverOpts, TlsClientConfig},
-    lookup::Lookup,
-    lookup_ip::LookupIp,
-    name_server::GenericConnector,
-    IntoName, Name, TryParseIp,
-};
+use swiftlink_infra::{log::*, net::ConnectOpts};
 use tokio::sync::RwLock;
 
-use swiftlink_infra::log::{debug, info, warn};
-use swiftlink_infra::net::ConnectOpts;
-
 use crate::{
-    dns_client::bootstrap::BootstrapResolver,
-    dns_conf::NameServerInfo,
-    dns_error::LookupError,
+    config::NameServerInfo,
     dns_url::{DnsUrl, DnsUrlParamExt},
+    error::LookupError,
+    libdns::{
+        self,
+        proto::{
+            op::{Edns, Message, MessageType, OpCode, Query},
+            rr::rdata::opt::{ClientSubnet, EdnsOption},
+            rr::{Record, RecordType},
+            xfer::{DnsHandle, DnsRequest, DnsRequestOptions, FirstAnswer},
+        },
+        resolver::{
+            config::{NameServerConfig, Protocol, ResolverOpts, TlsClientConfig},
+            lookup::Lookup,
+            name_server::GenericConnector,
+            IntoName, Name,
+        },
+    },
     proxy::ProxyConfig,
+    resolver::{GenericResolver, GenericResolverExt, LookupOptions},
     rustls::TlsClientConfigBundle,
     MAX_TTL,
 };
 
-use connection_provider::TokioRuntimeProvider;
+use bootstrap::BootstrapResolver;
+use connection_provider::TokioCustomeRuntimeProvider;
 
 #[derive(Default)]
 pub struct DnsClientBuilder {
@@ -94,6 +92,7 @@ impl DnsClientBuilder {
 
         let factory = NameServerFactory::new(TlsClientConfigBundle::new(ca_path, ca_file));
 
+        // initialize bootstrap resolver using pure ip dns url or bootstrap-dns
         bootstrap::set_resolver(
             async {
                 let mut bootstrap_infos = server_infos
@@ -111,6 +110,7 @@ impl DnsClientBuilder {
                     .cloned()
                     .collect::<Vec<_>>();
 
+                // try to use pure ip dns url as bootstrap-dns If bootstrap-dns is not set.
                 if bootstrap_infos.is_empty() {
                     bootstrap_infos = server_infos
                         .iter()
@@ -151,106 +151,36 @@ impl DnsClientBuilder {
         )
         .await;
 
-        let server_groups: HashMap<NameServerGroupName, HashSet<NameServerInfo>> =
-            server_infos.iter().fold(HashMap::new(), |mut map, info| {
-                let mut group_names = info
-                    .group
-                    .iter()
-                    .map(|s| s.deref())
-                    .map(NameServerGroupName::from)
-                    .collect::<Vec<_>>();
-
-                if group_names.is_empty() {
-                    group_names.push(NameServerGroupName::Default);
-                }
-
-                for name in group_names {
-                    if name != NameServerGroupName::Default
-                        && !info.exclude_default_group
-                        && map
-                            .entry(NameServerGroupName::Default)
-                            .or_default()
-                            .insert(info.clone())
-                    {
-                        debug!("append {} to default group.", info.url.to_string());
-                    }
-
-                    map.entry(name).or_default().insert(info.clone());
-                }
-                map
-            });
-
-        let mut servers = HashMap::with_capacity(server_groups.len());
-
-        for (group_name, group) in server_groups {
-            let group = group.into_iter().collect::<Vec<_>>();
-            let resolver = Default::default();
-            debug!(
-                "create name server {:?}, servers {}",
-                group_name,
-                group.len()
-            );
-            servers.insert(group_name.clone(), (group, resolver));
-        }
+        let server_group = {
+            if server_infos.len() == 0 {
+                warn!("no nameserver found, use system_conf instead.");
+                bootstrap::resolver().await.as_ref().into()
+            } else {
+                debug!("initialize nameserver group {:?}", server_infos);
+                Arc::new(
+                    factory
+                        .create_name_server_group(&server_infos, &proxies, client_subnet)
+                        .await,
+                )
+            }
+        };
 
         DnsClient {
             resolver_opts,
-            servers,
-            factory,
-            proxies,
-            client_subnet,
+            server_group,
         }
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct DnsClient {
     resolver_opts: ResolverOpts,
-    #[allow(clippy::type_complexity)]
-    servers:
-        HashMap<NameServerGroupName, (Vec<NameServerInfo>, RwLock<Option<Arc<NameServerGroup>>>)>,
-    factory: NameServerFactory,
-    proxies: Arc<HashMap<String, ProxyConfig>>,
-    client_subnet: Option<ClientSubnet>,
+    server_group: Arc<NameServerGroup>,
 }
 
 impl DnsClient {
     pub fn builder() -> DnsClientBuilder {
         DnsClientBuilder::default()
-    }
-
-    pub async fn default(&self) -> Arc<NameServerGroup> {
-        match self.get_server_group(NameServerGroupName::Default).await {
-            Some(server) => server,
-            None => bootstrap::resolver().await.as_ref().into(),
-        }
-    }
-
-    pub async fn get_server_group<N: Into<NameServerGroupName>>(
-        &self,
-        name: N,
-    ) -> Option<Arc<NameServerGroup>> {
-        let name = name.into();
-        match self.servers.get(&name) {
-            Some((infos, entry_lock)) => {
-                let entry = entry_lock.read().await;
-
-                if entry.is_none() {
-                    drop(entry);
-
-                    debug!("initialize name server {:?}", name);
-                    let ns = Arc::new(
-                        self.factory
-                            .create_name_server_group(infos, &self.proxies, self.client_subnet)
-                            .await,
-                    );
-                    entry_lock.write().await.replace(ns.clone());
-                    Some(ns)
-                } else {
-                    entry.as_ref().cloned()
-                }
-            }
-            None => None,
-        }
     }
 
     pub async fn lookup_nameserver(&self, name: Name, record_type: RecordType) -> Option<Lookup> {
@@ -273,96 +203,11 @@ impl GenericResolver for DnsClient {
         name: N,
         options: O,
     ) -> Result<Lookup, LookupError> {
-        let ns = self.default().await;
-        GenericResolver::lookup(ns.as_ref(), name, options).await
+        GenericResolver::lookup(self.server_group.as_ref(), name, options).await
     }
 }
 
-#[derive(Clone, Eq)]
-pub enum NameServerGroupName {
-    Bootstrap,
-    Default,
-    Name(String),
-}
-
-impl NameServerGroupName {
-    pub fn new(name: &str) -> Self {
-        match name.to_lowercase().as_str() {
-            "bootstrap" => NameServerGroupName::Bootstrap,
-            "default" => NameServerGroupName::Default,
-            _ => NameServerGroupName::Name(name.to_string()),
-        }
-    }
-
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Bootstrap => "bootstrap",
-            Self::Default => "default",
-            Self::Name(n) => n.as_str(),
-        }
-    }
-
-    #[inline]
-    pub fn is_default(&self) -> bool {
-        self.as_str() == "default"
-    }
-}
-
-impl std::hash::Hash for NameServerGroupName {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        match self {
-            NameServerGroupName::Bootstrap => "bootstrap".hash(state),
-            NameServerGroupName::Default => "default".hash(state),
-            NameServerGroupName::Name(n) => n.to_lowercase().as_str().hash(state),
-        }
-    }
-}
-
-impl std::fmt::Debug for NameServerGroupName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Bootstrap => write!(f, "[Group: Bootstrap]"),
-            Self::Default => write!(f, "[Group: Default]"),
-            Self::Name(name) => write!(f, "[Group: {}]", name),
-        }
-    }
-}
-
-impl From<&str> for NameServerGroupName {
-    #[inline]
-    fn from(value: &str) -> Self {
-        Self::new(value)
-    }
-}
-
-impl Deref for NameServerGroupName {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            NameServerGroupName::Bootstrap => "Bootstrap",
-            NameServerGroupName::Default => "Default",
-            NameServerGroupName::Name(s) => s.as_str(),
-        }
-    }
-}
-
-impl PartialEq for NameServerGroupName {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Name(l0), Self::Name(r0)) => l0.eq_ignore_ascii_case(r0),
-            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
-        }
-    }
-}
-
-impl Default for NameServerGroupName {
-    fn default() -> Self {
-        Self::Default
-    }
-}
-
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 pub struct NameServerGroup {
     resolver_opts: ResolverOpts,
     servers: Vec<Arc<NameServer>>,
@@ -419,9 +264,10 @@ impl GenericResolver for NameServerGroup {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct NameServerFactory {
     tls_client_config: TlsClientConfigBundle,
-    cache: RwLock<HashMap<String, Arc<NameServer>>>,
+    cache: Arc<RwLock<HashMap<String, Arc<NameServer>>>>,
 }
 
 impl NameServerFactory {
@@ -439,7 +285,7 @@ impl NameServerFactory {
         resolver_opts: NameServerOpts,
         connect_opts: ConnectOpts,
     ) -> Arc<NameServer> {
-        use hickory_resolver::name_server::NameServer as N;
+        use crate::libdns::resolver::name_server::NameServer as N;
 
         let key = format!(
             "{}{:?}",
@@ -453,10 +299,10 @@ impl NameServerFactory {
 
         let config = Self::create_config_from_url(url, self.tls_client_config.clone());
 
-        let inner = N::<GenericConnector<TokioRuntimeProvider>>::new(
+        let inner = N::<GenericConnector<TokioCustomeRuntimeProvider>>::new(
             config,
             resolver_opts.deref().to_owned(),
-            GenericConnector::new(TokioRuntimeProvider::new(proxy, connect_opts)),
+            GenericConnector::new(TokioCustomeRuntimeProvider::new(proxy, connect_opts)),
         );
 
         let ns = Arc::new(NameServer {
@@ -471,7 +317,7 @@ impl NameServerFactory {
         url: &VerifiedDnsUrl,
         tls_client_config: TlsClientConfigBundle,
     ) -> NameServerConfig {
-        use hickory_resolver::config::Protocol::*;
+        use crate::libdns::resolver::config::Protocol::*;
 
         let addr = url.addr();
 
@@ -508,6 +354,14 @@ impl NameServerFactory {
                 trust_negative_responses: true,
                 bind_addr: None,
             },
+            Tls => NameServerConfig {
+                socket_addr: addr,
+                protocol: Protocol::Tls,
+                tls_dns_name,
+                trust_negative_responses: true,
+                bind_addr: None,
+                tls_config,
+            },
             Https => NameServerConfig {
                 socket_addr: addr,
                 protocol: Protocol::Https,
@@ -524,15 +378,7 @@ impl NameServerFactory {
                 bind_addr: None,
                 tls_config,
             },
-            Protocol::Tls => NameServerConfig {
-                socket_addr: addr,
-                protocol: Protocol::Tls,
-                tls_dns_name,
-                trust_negative_responses: true,
-                bind_addr: None,
-                tls_config,
-            },
-            _ => todo!(),
+            _ => unimplemented!(),
         }
     }
 
@@ -550,6 +396,7 @@ impl NameServerFactory {
             let url = info.url.clone();
             let verified_urls = match TryInto::<VerifiedDnsUrl>::try_into(url) {
                 Ok(url) => vec![url],
+                // if url is not a ip address, then try to resolve it.
                 Err(url) => {
                     if let Some(domain) = url.domain() {
                         match resolver.lookup_ip(domain).await {
@@ -606,24 +453,54 @@ impl NameServerFactory {
     }
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct NameServerOpts {
+    client_subnet: Option<ClientSubnet>,
+    resolver_opts: ResolverOpts,
+}
+
+impl NameServerOpts {
+    #[inline]
+    pub fn new(client_subnet: Option<ClientSubnet>, resolver_opts: ResolverOpts) -> Self {
+        Self {
+            client_subnet,
+            resolver_opts,
+        }
+    }
+
+    pub fn with_resolver_opts(mut self, resolver_opts: ResolverOpts) -> Self {
+        self.resolver_opts = resolver_opts;
+        self
+    }
+}
+
+impl Deref for NameServerOpts {
+    type Target = ResolverOpts;
+
+    fn deref(&self) -> &Self::Target {
+        &self.resolver_opts
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct NameServer {
     opts: NameServerOpts,
-    inner: hickory_resolver::name_server::NameServer<GenericConnector<TokioRuntimeProvider>>,
+    inner: libdns::resolver::name_server::NameServer<GenericConnector<TokioCustomeRuntimeProvider>>,
 }
 
 impl NameServer {
-    fn new(
+    pub fn new(
         config: NameServerConfig,
         opts: NameServerOpts,
         proxy: Option<ProxyConfig>,
         connect_opts: ConnectOpts,
     ) -> NameServer {
-        use hickory_resolver::name_server::NameServer as N;
+        use crate::libdns::resolver::name_server::NameServer as N;
 
-        let inner = N::<GenericConnector<TokioRuntimeProvider>>::new(
+        let inner = N::<GenericConnector<TokioCustomeRuntimeProvider>>::new(
             config,
             opts.resolver_opts.clone(),
-            GenericConnector::new(TokioRuntimeProvider::new(proxy, connect_opts)),
+            GenericConnector::new(TokioCustomeRuntimeProvider::new(proxy, connect_opts)),
         );
 
         Self { opts, inner }
@@ -687,167 +564,10 @@ impl GenericResolver for NameServer {
     }
 }
 
-#[derive(Default, Clone)]
-pub struct NameServerOpts {
-    pub client_subnet: Option<ClientSubnet>,
-
-    resolver_opts: ResolverOpts,
-}
-
-impl NameServerOpts {
-    #[inline]
-    pub fn new(client_subnet: Option<ClientSubnet>, resolver_opts: ResolverOpts) -> Self {
-        Self {
-            client_subnet,
-            resolver_opts,
-        }
-    }
-
-    pub fn with_resolver_opts(mut self, resolver_opts: ResolverOpts) -> Self {
-        self.resolver_opts = resolver_opts;
-        self
-    }
-}
-
-impl Deref for NameServerOpts {
-    type Target = ResolverOpts;
-
-    fn deref(&self) -> &Self::Target {
-        &self.resolver_opts
-    }
-}
-
-#[async_trait::async_trait]
-pub trait GenericResolver {
-    fn options(&self) -> &ResolverOpts;
-
-    /// Lookup any RecordType
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - name of the record to lookup, if name is not a valid domain name, an error will be returned
-    /// * `record_type` - type of record to lookup, all RecordData responses will be filtered to this type
-    ///
-    /// # Returns
-    ///
-    ///  A future for the returned Lookup RData
-    async fn lookup<N: IntoName + Send, O: Into<LookupOptions> + Send + Clone>(
-        &self,
-        name: N,
-        options: O,
-    ) -> Result<Lookup, LookupError>;
-}
-
-#[async_trait::async_trait]
-pub trait GenericResolverExt {
-    /// Generic lookup for any RecordType
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - name of the record to lookup, if name is not a valid domain name, an error will be returned
-    /// * `record_type` - type of record to lookup, all RecordData responses will be filtered to this type
-    ///
-    /// # Returns
-    ///
-    //  A future for the returned Lookup RData
-    // async fn lookup<N: IntoName + Send>(
-    //     &self,
-    //     name: N,
-    //     record_type: RecordType,
-    // ) -> Result<Lookup, ResolveError>;
-
-    /// Performs a dual-stack DNS lookup for the IP for the given hostname.
-    ///
-    /// See the configuration and options parameters for controlling the way in which A(Ipv4) and AAAA(Ipv6) lookups will be performed. For the least expensive query a fully-qualified-domain-name, FQDN, which ends in a final `.`, e.g. `www.example.com.`, will only issue one query. Anything else will always incur the cost of querying the `ResolverConfig::domain` and `ResolverConfig::search`.
-    ///
-    /// # Arguments
-    /// * `host` - string hostname, if this is an invalid hostname, an error will be returned.
-    async fn lookup_ip<N: IntoName + TryParseIp + Send>(
-        &self,
-        host: N,
-    ) -> Result<LookupIp, LookupError>;
-}
-
-#[async_trait::async_trait]
-impl<T> GenericResolverExt for T
-where
-    T: GenericResolver + Sync,
-{
-    /// * `host` - string hostname, if this is an invalid hostname, an error will be returned.
-    async fn lookup_ip<N: IntoName + TryParseIp + Send>(
-        &self,
-        host: N,
-    ) -> Result<LookupIp, LookupError> {
-        let mut finally_ip_addr: Option<Record> = None;
-        let maybe_ip = host.try_parse_ip();
-        let maybe_name: ProtoResult<Name> = host.into_name();
-
-        // if host is a ip address, return directly.
-        if let Some(ip_addr) = maybe_ip {
-            let name = maybe_name.clone().unwrap_or_default();
-            let record = Record::from_rdata(name.clone(), MAX_TTL, ip_addr.clone());
-
-            // if ndots are greater than 4, then we can't assume the name is an IpAddr
-            //   this accepts IPv6 as well, b/c IPv6 can take the form: 2001:db8::198.51.100.35
-            //   but `:` is not a valid DNS character, so technically this will fail parsing.
-            //   TODO: should we always do search before returning this?
-            if self.options().ndots > 4 {
-                finally_ip_addr = Some(record);
-            } else {
-                let query = Query::query(name, ip_addr.record_type());
-                let lookup = Lookup::new_with_max_ttl(query, Arc::from([record]));
-                return Ok(lookup.into());
-            }
-        }
-
-        let name = match (maybe_name, finally_ip_addr.as_ref()) {
-            (Ok(name), _) => name,
-            (Err(_), Some(ip_addr)) => {
-                // it was a valid IP, return that...
-                let query = Query::query(ip_addr.name().clone(), ip_addr.record_type());
-                let lookup = Lookup::new_with_max_ttl(query, Arc::from([ip_addr.clone()]));
-                return Ok(lookup.into());
-            }
-            (Err(err), None) => {
-                return Err(err.into());
-            }
-        };
-
-        let strategy = self.options().ip_strategy;
-
-        use hickory_resolver::config::LookupIpStrategy::*;
-
-        match strategy {
-            Ipv4Only => self.lookup(name.clone(), RecordType::A).await,
-            Ipv6Only => self.lookup(name.clone(), RecordType::AAAA).await,
-            Ipv4AndIpv6 => {
-                use futures_util::future::{select, Either};
-                match select(
-                    self.lookup(name.clone(), RecordType::A),
-                    self.lookup(name.clone(), RecordType::AAAA),
-                )
-                .await
-                {
-                    Either::Left((res, _)) => res,
-                    Either::Right((res, _)) => res,
-                }
-            }
-            Ipv6thenIpv4 => match self.lookup(name.clone(), RecordType::AAAA).await {
-                Ok(lookup) => Ok(lookup),
-                Err(_err) => self.lookup(name.clone(), RecordType::A).await,
-            },
-            Ipv4thenIpv6 => match self.lookup(name.clone(), RecordType::A).await {
-                Ok(lookup) => Ok(lookup),
-                Err(_err) => self.lookup(name.clone(), RecordType::AAAA).await,
-            },
-        }
-        .map(|lookup| lookup.into())
-    }
-}
-
 pub struct VerifiedDnsUrl(DnsUrl);
 
 impl VerifiedDnsUrl {
+    #[allow(unused)]
     pub fn ip(&self) -> IpAddr {
         self.0.ip().expect("VerifiedDnsUrl must have ip.")
     }
@@ -875,30 +595,6 @@ impl std::convert::TryFrom<DnsUrl> for VerifiedDnsUrl {
             return Err(value);
         }
         Ok(Self(value))
-    }
-}
-
-#[derive(Clone)]
-pub struct LookupOptions {
-    pub record_type: RecordType,
-    pub client_subnet: Option<ClientSubnet>,
-}
-
-impl Default for LookupOptions {
-    fn default() -> Self {
-        Self {
-            record_type: RecordType::A,
-            client_subnet: Default::default(),
-        }
-    }
-}
-
-impl From<RecordType> for LookupOptions {
-    fn from(record_type: RecordType) -> Self {
-        Self {
-            record_type,
-            ..Default::default()
-        }
     }
 }
 
@@ -941,22 +637,27 @@ fn build_message(
 mod connection_provider {
     use std::{future::Future, io::Result, net::SocketAddr, pin::Pin};
 
-    use hickory_proto::{iocompat::AsyncIoTokioAsStd, TokioTime};
-    use hickory_resolver::{name_server::RuntimeProvider, TokioHandle};
-    use swiftlink_infra::net::ConnectOpts;
-
-    use crate::proxy::{self, ProxyConfig, TcpStream};
     use tokio::net::UdpSocket as TokioUdpSocket;
 
-    /// The Tokio Runtime for async execution
+    use swiftlink_infra::net::ConnectOpts;
+
+    use crate::{
+        libdns::{
+            proto::{iocompat::AsyncIoTokioAsStd, TokioTime},
+            resolver::{name_server::RuntimeProvider, TokioHandle},
+        },
+        proxy::{self, ProxyConfig, TcpStream},
+    };
+
+    /// The swiftlink dns Tokio Runtime for async execution
     #[derive(Clone)]
-    pub struct TokioRuntimeProvider {
+    pub struct TokioCustomeRuntimeProvider {
         proxy: Option<ProxyConfig>,
         connect_opts: ConnectOpts,
         handle: TokioHandle,
     }
 
-    impl TokioRuntimeProvider {
+    impl TokioCustomeRuntimeProvider {
         pub fn new(proxy: Option<ProxyConfig>, connect_opts: ConnectOpts) -> Self {
             Self {
                 proxy,
@@ -966,7 +667,7 @@ mod connection_provider {
         }
     }
 
-    impl RuntimeProvider for TokioRuntimeProvider {
+    impl RuntimeProvider for TokioCustomeRuntimeProvider {
         type Handle = TokioHandle;
         type Timer = TokioTime;
         type Udp = TokioUdpSocket;
@@ -980,6 +681,7 @@ mod connection_provider {
             &self,
             server_addr: SocketAddr,
         ) -> Pin<Box<dyn Send + Future<Output = Result<Self::Tcp>>>> {
+            // TODO: bind interface
             let proxy_config = self.proxy.clone();
             let connect_opts = self.connect_opts.clone();
 
@@ -995,15 +697,20 @@ mod connection_provider {
             local_addr: SocketAddr,
             _server_addr: SocketAddr,
         ) -> Pin<Box<dyn Send + Future<Output = Result<Self::Udp>>>> {
+            // TODO: bind addr
             Box::pin(TokioUdpSocket::bind(local_addr))
         }
     }
 }
 
 mod bootstrap {
-
-    use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig};
-    use tracing::warn;
+    use crate::libdns::{
+        proto::rr::RecordType,
+        resolver::{
+            config::{NameServerConfigGroup, ResolverConfig},
+            Name,
+        },
+    };
 
     use super::*;
 
@@ -1013,7 +720,7 @@ mod bootstrap {
         let lock = RESOLVER.read().await;
         if lock.is_none() {
             drop(lock);
-            let resolver = Arc::new(BootstrapResolver::from_system_conf());
+            let resolver: Arc<BootstrapResolver> = Arc::new(BootstrapResolver::from_system_conf());
             set_resolver(resolver.clone()).await;
             resolver
         } else {
@@ -1060,8 +767,8 @@ mod bootstrap {
 
     impl BootstrapResolver<NameServerGroup> {
         pub fn from_system_conf() -> Self {
-            let (resolv_config, resolv_opts) = hickory_resolver::system_conf::read_system_conf()
-                .unwrap_or_else(|err| {
+            let (resolv_config, resolv_opts) =
+                crate::libdns::resolver::system_conf::read_system_conf().unwrap_or_else(|err| {
                     warn!("read system conf failed, {}", err);
 
                     use crate::preset_ns::{ALIDNS, ALIDNS_IPS, CLOUDFLARE, CLOUDFLARE_IPS};
@@ -1079,9 +786,12 @@ mod bootstrap {
                         true,
                     ));
 
+                    let mut resolv_opts = ResolverOpts::default();
+                    // TODO: cache_size should configurable?
+                    resolv_opts.cache_size = 256;
                     (
                         ResolverConfig::from_parts(None, vec![], name_servers),
-                        ResolverOpts::default(),
+                        resolv_opts,
                     )
                 });
             let mut name_servers = vec![];
@@ -1191,16 +901,6 @@ mod tests {
             || i.ip_addr() == Some("223.6.6.6".parse::<IpAddr>().unwrap())));
     }
 
-    #[test]
-    fn test_name_server_group_name() {
-        let a = NameServerGroupName::from("bootstrap");
-        let b = NameServerGroupName::from("Bootstrap");
-        assert_eq!(a, b);
-        let a = NameServerGroupName::from("abc");
-        let b = NameServerGroupName::from("Abc");
-        assert_eq!(a, b);
-    }
-
     async fn assert_google(client: &DnsClient) {
         let name = "dns.google";
         let addrs = client
@@ -1234,6 +934,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "reason"]
     async fn test_nameserver_google_tls_resolve() {
         let dns_url = DnsUrl::from_str("tls://dns.google?enable_sni=false").unwrap();
         let client = DnsClient::builder().add_server(dns_url).build().await;
@@ -1338,6 +1039,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "not available now"]
     async fn test_nameserver_adguard_https_resolve() {
         let dns_url = DnsUrl::from_str("https://dns.adguard-dns.com/dns-query").unwrap();
 

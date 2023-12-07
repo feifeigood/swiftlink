@@ -1,5 +1,5 @@
+use swiftlink_infra::log::{info, warn};
 use tokio::runtime::{Builder, Runtime};
-use tracing::{info, warn};
 
 #[cfg(feature = "multicore")]
 pub(crate) fn build() -> Runtime {

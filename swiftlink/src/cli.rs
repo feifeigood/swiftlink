@@ -19,9 +19,13 @@ pub enum Commands {
         #[arg(short = 'c', long)]
         conf: Option<PathBuf>,
 
-        /// Turn debugging information on
+        /// The configuration directory
+        #[arg(short = 'd', long)]
+        home_dir: Option<PathBuf>,
+
+        /// Turn trace information on
         #[arg(long)]
-        debug: bool,
+        verbose: bool,
     },
 }
 
@@ -37,7 +41,8 @@ mod tests {
             cli.command,
             Commands::Run {
                 conf: Some(_),
-                debug: false
+                home_dir: None,
+                verbose: false
             }
         ));
 
@@ -46,19 +51,21 @@ mod tests {
             cli.command,
             Commands::Run {
                 conf: Some(_),
-                debug: false
+                home_dir: None,
+                verbose: false
             }
         ));
     }
 
     #[test]
     fn test_cli_args_parse_start_debug_on() {
-        let cli = Cli::parse_from(["swiftlink", "run", "-c", "/etc/swiftlink.conf", "--debug"]);
+        let cli = Cli::parse_from(["swiftlink", "run", "-c", "/etc/swiftlink.conf", "--verbose"]);
         assert!(matches!(
             cli.command,
             Commands::Run {
                 conf: Some(_),
-                debug: true
+                home_dir: None,
+                verbose: true
             }
         ));
     }

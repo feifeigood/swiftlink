@@ -1,18 +1,21 @@
+use futures_util::{future::BoxFuture, FutureExt};
 use std::{str::FromStr, sync::Arc};
 
-use futures_util::{future::BoxFuture, FutureExt};
-use hickory_proto::{
-    op::ResponseCode,
-    rr::{rdata::SOA, Record},
+use crate::{
+    libdns::{
+        proto::{
+            op::ResponseCode,
+            rr::{rdata::SOA, Record},
+        },
+        resolver::{error::ResolveErrorKind, Name},
+    },
+    DnsConfig, DnsContext, DnsError, DnsRequest, DnsResponse, MAX_TTL,
 };
-use hickory_resolver::{error::ResolveErrorKind, Name};
 
-use swiftlink_infra::ServerOpts;
+pub use fakedns::FakeDnsHandle;
+pub use forward::ForwardHandle;
 
-use crate::{DnsConfig, DnsContext, DnsError, DnsRequest, DnsResponse, MAX_TTL};
-
-pub use forward::ForwardRequestHandle;
-
+mod fakedns;
 mod forward;
 
 #[async_trait::async_trait]
@@ -21,16 +24,16 @@ pub trait DnsRequestHandle: 'static + Send + Sync {
         &self,
         ctx: &mut DnsContext,
         req: &DnsRequest,
-        next: NextDnsRequestHandle<'_>,
+        next: DnsRequestHandleNext<'_>,
     ) -> Result<DnsResponse, DnsError>;
 }
 
 #[derive(Clone)]
-pub struct NextDnsRequestHandle<'a> {
+pub struct DnsRequestHandleNext<'a> {
     handles: &'a [Arc<dyn DnsRequestHandle>],
 }
 
-impl<'a> NextDnsRequestHandle<'a> {
+impl<'a> DnsRequestHandleNext<'a> {
     pub(crate) fn new(handles: &'a [Arc<dyn DnsRequestHandle>]) -> Self {
         Self { handles }
     }
@@ -100,7 +103,6 @@ impl DnsRequestHandlerBuilder {
 
     #[inline]
     pub fn build(self, cfg: Arc<DnsConfig>) -> DnsRequestHandler {
-        // TODO: init handle
         DnsRequestHandler {
             cfg,
             handle_stack: self.handle_stack.into_boxed_slice(),
@@ -114,13 +116,9 @@ pub struct DnsRequestHandler {
 }
 
 impl DnsRequestHandler {
-    pub async fn search(
-        &self,
-        req: &DnsRequest,
-        server_opts: &ServerOpts,
-    ) -> Result<DnsResponse, DnsError> {
+    pub async fn search(&self, req: &DnsRequest) -> Result<DnsResponse, DnsError> {
         let cfg = self.cfg.clone();
-        let mut ctx = DnsContext::new(cfg, server_opts.clone());
+        let mut ctx = DnsContext::new(cfg);
 
         self.execute(&mut ctx, req).await
     }
@@ -130,7 +128,8 @@ impl DnsRequestHandler {
         ctx: &mut DnsContext,
         req: &DnsRequest,
     ) -> Result<DnsResponse, DnsError> {
-        let next = NextDnsRequestHandle::new(&self.handle_stack);
-        next.run(ctx, req).await
+        DnsRequestHandleNext::new(&self.handle_stack)
+            .run(ctx, req)
+            .await
     }
 }

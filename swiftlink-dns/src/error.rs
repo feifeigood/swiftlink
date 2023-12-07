@@ -1,7 +1,9 @@
-use hickory_proto::{error::ProtoError, op::ResponseCode};
-use hickory_resolver::{
-    error::{ResolveError, ResolveErrorKind},
-    lookup::Lookup,
+use crate::libdns::{
+    proto::{error::ProtoError, op::ResponseCode},
+    resolver::{
+        error::{ResolveError, ResolveErrorKind},
+        lookup::Lookup,
+    },
 };
 use std::{io, sync::Arc};
 use thiserror::Error;
@@ -20,11 +22,6 @@ pub enum LookupError {
     /// Resolve Error
     #[error("Forward resolution error: {0}")]
     ResolveError(#[from] ResolveError),
-    /// Recursive Resolver Error
-    #[cfg(feature = "hickory-recursor")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "recursor")))]
-    #[error("Recursive resolution error: {0}")]
-    RecursiveError(#[from] create::libdns::recursor::Error),
     /// An underlying IO error occurred
     #[error("io error: {0}")]
     Io(Arc<io::Error>),

@@ -3,7 +3,8 @@
 use std::{env, path::PathBuf};
 
 use cli::*;
-use swiftlink_infra::log;
+
+use swiftlink_infra::log::{self, info};
 
 use crate::app::App;
 
@@ -14,6 +15,7 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 mod app;
 mod cli;
 mod conf;
+mod context;
 mod error;
 mod rt;
 
@@ -35,18 +37,23 @@ impl Cli {
         let _guard = log::default();
 
         match self.command {
-            Commands::Run { conf, .. } => {
+            Commands::Run { conf, home_dir, .. } => {
                 // TODO: pid file
-                run_server(conf.unwrap_or(env::current_dir().unwrap().join("swiftlink.toml")));
+
+                let home_dir = home_dir
+                    .unwrap_or(dirs::home_dir().expect("Failed to get homedir"))
+                    .join("swiftlink");
+
+                run_server(conf.unwrap_or(home_dir.join("swiftlink.toml")), home_dir);
             }
         }
     }
 }
 
-fn run_server(conf: PathBuf) {
-    App::new(conf)
+fn run_server(conf: PathBuf, home_dir: PathBuf) {
+    App::new(conf, home_dir)
         .expect("Failed to create swiftlink app")
         .bootstrap();
 
-    log::info!("{} {} shutdown", NAME, version());
+    info!("{} {} shutdown", NAME, version());
 }

@@ -1,38 +1,40 @@
-use std::borrow::Borrow;
-
-use hickory_resolver::Name;
+use std::{borrow::Borrow, sync::Arc};
 
 use swiftlink_infra::log::debug;
 
 use crate::{
-    dns_client::{DnsClient, GenericResolver, LookupOptions},
-    dns_handle::NextDnsRequestHandle,
-    DnsContext, DnsError, DnsRequest, DnsRequestHandle, DnsResponse,
+    client::DnsClient,
+    dns_handle::{DnsRequestHandle, DnsRequestHandleNext},
+    libdns::resolver::Name,
+    resolver::{GenericResolver, LookupOptions},
+    DnsContext, DnsError, DnsRequest, DnsResponse,
 };
 
-pub struct ForwardRequestHandle {
-    client: DnsClient,
+#[derive(Debug)]
+pub struct ForwardHandle {
+    client: Arc<DnsClient>,
 }
 
-impl ForwardRequestHandle {
-    pub fn new(client: DnsClient) -> Self {
+impl ForwardHandle {
+    pub fn new(client: Arc<DnsClient>) -> Self {
         Self { client }
     }
 }
 
 #[async_trait::async_trait]
-impl DnsRequestHandle for ForwardRequestHandle {
+impl DnsRequestHandle for ForwardHandle {
     async fn handle(
         &self,
         ctx: &mut DnsContext,
         req: &DnsRequest,
-        _next: NextDnsRequestHandle<'_>,
+        _next: DnsRequestHandleNext<'_>,
     ) -> Result<DnsResponse, DnsError> {
         let name: &Name = req.query().name().borrow();
         let rtype = req.query().query_type();
 
         let client = &self.client;
 
+        // if dns request query nameserver, lookup local cache first
         if let Some(lookup) = client.lookup_nameserver(name.clone(), rtype).await {
             debug!(
                 "lookup nameserver {} {} ip {:?}",
@@ -54,11 +56,7 @@ impl DnsRequestHandle for ForwardRequestHandle {
             client_subnet: None,
         };
 
+        // forward dns request
         client.lookup(name.clone(), lookup_options).await
     }
 }
-
-struct LookupIpOptions {}
-
-#[cfg(test)]
-mod tests {}

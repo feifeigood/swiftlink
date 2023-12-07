@@ -1,34 +1,29 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
-use ipnet::IpNet;
+use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use serde::Deserialize;
 use serde_with::{serde_as, DeserializeFromStr};
-use tracing::warn;
 
-use swiftlink_infra::{parse, Listener};
+use swiftlink_infra::{log::warn, parse, Listener};
 
 use crate::{
     dns_url::{DnsUrl, DnsUrlParamExt},
     proxy::ProxyConfig,
 };
 
-#[derive(Deserialize, Default, Clone)]
+#[derive(Default, Debug, Clone, Deserialize)]
 #[serde(default)]
 #[serde_as]
 pub struct DnsConfig {
-    /// dns server bind ip and port, default dns server port is 53, support binding multi ip and port
-    binds: Vec<Listener>,
+    /// dns server enable
+    enable: bool,
 
-    /// tcp connection idle timeout
-    ///
-    /// tcp-idle-time [second]
-    tcp_idle_time: Option<u64>,
+    /// dns server bind ip and port, default dns server port is 53
+    listen: Listener,
 
     /// remote dns server list
+    #[serde(rename = "nameserver")]
     servers: Vec<NameServerInfo>,
-
-    /// check /etc/hosts file before dns request (only works for unix like OS)
-    use_hosts_file: bool,
 
     /// edns client subnet
     ///
@@ -40,18 +35,29 @@ pub struct DnsConfig {
     /// ```
     edns_client_subnet: Option<IpNet>,
 
+    fake_ip: bool,
+    fake_ip_size: Option<usize>,
+    fake_ip_persist: bool,
+    fake_ip_range: Option<Ipv4Net>,
+    fake_ip6_range: Option<Ipv6Net>,
+
     /// The proxy server for upstream querying.
     #[serde_as(as = "Arc<HashMap<_,DisplayFromStr>>")]
     proxy_servers: Arc<HashMap<String, ProxyConfig>>,
 }
 
 impl DnsConfig {
-    pub fn binds(&self) -> &[Listener] {
-        &self.binds
+    pub fn enabled(&self) -> bool {
+        self.enable
     }
 
-    pub fn tcp_idle_time(&self) -> u64 {
-        self.tcp_idle_time.unwrap_or(120)
+    pub fn listen(&self) -> Listener {
+        let listener = self.listen.clone();
+        if listener.sock_addr().port() <= 0 {
+            listener.sock_addr().set_port(53);
+        }
+
+        listener
     }
 
     pub fn servers(&self) -> &[NameServerInfo] {
@@ -66,15 +72,32 @@ impl DnsConfig {
     pub fn edns_client_subnet(&self) -> Option<IpNet> {
         self.edns_client_subnet
     }
+
+    #[inline]
+    pub fn fakeip(&self) -> bool {
+        self.fake_ip
+    }
+
+    #[inline]
+    pub fn fakeip_size(&self) -> Option<usize> {
+        self.fake_ip_size
+    }
+
+    #[inline]
+    pub fn fakeip_persist(&self) -> bool {
+        self.fake_ip_persist
+    }
+
+    #[inline]
+    pub fn fakeip_range(&self) -> (Option<Ipv4Net>, Option<Ipv6Net>) {
+        (self.fake_ip_range, self.fake_ip6_range)
+    }
 }
 
 #[derive(DeserializeFromStr, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NameServerInfo {
     /// the nameserver url.
     pub url: DnsUrl,
-
-    /// set server to group, use with nameserver /domain/group.
-    pub group: Vec<String>,
 
     /// result must exist edns RR, or discard result.
     pub check_edns: bool,
@@ -84,9 +107,6 @@ pub struct NameServerInfo {
 
     /// use proxy to connect to server.
     pub proxy: Option<String>,
-
-    /// exclude this server from default group.
-    pub exclude_default_group: bool,
 
     /// edns client subnet
     ///
@@ -112,8 +132,6 @@ impl FromStr for NameServerInfo {
         let mut parts = parse::split_options(s, ' ');
 
         if let Some(Ok(mut url)) = parts.next().map(DnsUrl::from_str) {
-            let mut exclude_default_group = false;
-            let mut group = vec![];
             let mut bootstrap_dns = false;
             let mut check_edns = false;
             let mut edns_client_subnet = None;
@@ -125,9 +143,6 @@ impl FromStr for NameServerInfo {
                 }
                 if part.starts_with('-') {
                     match part.trim_end_matches(':') {
-                        "-exclude-default-group" | "--exclude-default-group" => {
-                            exclude_default_group = true
-                        }
                         "-bootstrap-dns" | "--bootstrap-dns" => bootstrap_dns = true,
                         "-host-name" | "--host-name" => {
                             if let Some(host_name) =
@@ -141,9 +156,6 @@ impl FromStr for NameServerInfo {
                             }
                         }
                         "-check-edns" | "--check-edns" => check_edns = true,
-                        "-group" | "--group" => {
-                            group.push(parts.next().expect("group name").to_string())
-                        }
                         "-proxy" | "--proxy" => {
                             proxy = Some(parts.next().expect("proxy name").to_string())
                         }
@@ -160,8 +172,6 @@ impl FromStr for NameServerInfo {
 
             Ok(Self {
                 url,
-                group,
-                exclude_default_group,
                 check_edns,
                 bootstrap_dns,
                 proxy,
@@ -177,8 +187,6 @@ impl From<DnsUrl> for NameServerInfo {
     fn from(url: DnsUrl) -> Self {
         Self {
             url,
-            group: vec![],
-            exclude_default_group: false,
             bootstrap_dns: false,
             check_edns: false,
             proxy: None,
@@ -192,28 +200,21 @@ mod tests {
 
     use std::net::{IpAddr, Ipv4Addr};
 
-    use hickory_resolver::config::Protocol;
-    use swiftlink_infra::IListener;
+    use crate::libdns::resolver::config::Protocol;
 
     use crate::proxy::ProxyProtocol;
 
     use super::*;
 
     #[test]
-    fn test_config_bind_with_device() {
+    fn test_config_listen() {
         let cfg_str = r#"
-        binds = ["0.0.0.0:4453@eth0 -udp"]
+        listen = "0.0.0.0:4453"
         "#;
 
         let cfg: DnsConfig = toml::from_str(&cfg_str).unwrap();
 
-        assert_eq!(cfg.binds().len(), 1);
-
-        let bind = cfg.binds().get(0).unwrap();
-
-        assert_eq!(bind.sock_addr(), "0.0.0.0:4453".parse().unwrap());
-
-        assert_eq!(bind.device(), Some("eth0"));
+        assert_eq!(cfg.listen().sock_addr(), "0.0.0.0:4453".parse().unwrap());
     }
 
     #[test]

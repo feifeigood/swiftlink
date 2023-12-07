@@ -17,10 +17,8 @@ pub struct CacheFile {
 }
 
 impl CacheFile {
-    pub fn global() -> &'static CacheFile {
-        INSTANCE
-            .get()
-            .expect("Cachefile should be initialized first")
+    pub fn instance() -> Option<&'static CacheFile> {
+        INSTANCE.get()
     }
 
     pub fn with_cache_dir<P: AsRef<Path>>(cache_dir: P) -> io::Result<&'static CacheFile> {
