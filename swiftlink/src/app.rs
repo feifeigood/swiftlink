@@ -121,13 +121,11 @@ impl App {
         Ok(Self {
             config,
             context,
-            listener_map: Default::default(),
+            listener_map,
             runtime,
             guard,
         })
     }
-
-    async fn register_inbound(&self) {}
 
     pub fn bootstrap(self) {
         // Raise `nofile` limit on Linux/MacOS
