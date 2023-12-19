@@ -2,6 +2,7 @@ mod listener;
 
 pub use listener::*;
 
+pub mod auth;
 pub mod cachefile;
 pub mod fakedns;
 pub mod file_mode;
