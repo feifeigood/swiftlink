@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use enum_dispatch::enum_dispatch;
+use swiftlink_infra::net::ConnectOpts;
 
 use crate::{
     client::DnsClient,
@@ -11,9 +12,7 @@ use crate::{
             op::Query,
             rr::{rdata::opt::ClientSubnet, Record, RecordType},
         },
-        resolver::{
-            config::ResolverOpts, lookup::Lookup, lookup_ip::LookupIp, IntoName, Name, TryParseIp,
-        },
+        resolver::{config::ResolverOpts, lookup::Lookup, lookup_ip::LookupIp, IntoName, Name, TryParseIp},
     },
     DnsConfig, MAX_TTL,
 };
@@ -87,10 +86,7 @@ pub trait GenericResolverExt {
     ///
     /// # Arguments
     /// * `host` - string hostname, if this is an invalid hostname, an error will be returned.
-    async fn lookup_ip<N: IntoName + TryParseIp + Send>(
-        &self,
-        host: N,
-    ) -> Result<LookupIp, LookupError>;
+    async fn lookup_ip<N: IntoName + TryParseIp + Send>(&self, host: N) -> Result<LookupIp, LookupError>;
 }
 
 #[async_trait::async_trait]
@@ -99,10 +95,7 @@ where
     T: GenericResolver + Sync,
 {
     /// * `host` - string hostname, if this is an invalid hostname, an error will be returned.
-    async fn lookup_ip<N: IntoName + TryParseIp + Send>(
-        &self,
-        host: N,
-    ) -> Result<LookupIp, LookupError> {
+    async fn lookup_ip<N: IntoName + TryParseIp + Send>(&self, host: N) -> Result<LookupIp, LookupError> {
         let mut finally_ip_addr: Option<Record> = None;
         let maybe_ip = host.try_parse_ip();
         let maybe_name: ProtoResult<Name> = host.into_name();
@@ -176,10 +169,7 @@ where
 #[async_trait::async_trait]
 #[enum_dispatch]
 pub trait IDnsResolver {
-    async fn lookup_ip<N: IntoName + TryParseIp + Send>(
-        &self,
-        host: N,
-    ) -> Result<LookupIp, LookupError>;
+    async fn lookup_ip<N: IntoName + TryParseIp + Send>(&self, host: N) -> Result<LookupIp, LookupError>;
 }
 
 #[derive(Debug, Clone)]
@@ -193,7 +183,7 @@ impl Into<Arc<DnsClient>> for DnsResolver {
     }
 }
 
-pub async fn build_dns_resolver(dns: &DnsConfig) -> DnsResolver {
+pub async fn build_dns_resolver(dns: &DnsConfig, connect_opts: &ConnectOpts) -> DnsResolver {
     if !dns.enabled() {
         let client: Arc<DnsClient> = Arc::new(DnsClient::builder().build().await);
         return DnsResolver { client };
@@ -204,6 +194,8 @@ pub async fn build_dns_resolver(dns: &DnsConfig) -> DnsResolver {
 
     let mut builder = DnsClient::builder();
     builder = builder.add_servers(servers.to_vec());
+
+    builder = builder.with_connect_opts(connect_opts.clone());
 
     if let Some(subnet) = dns.edns_client_subnet() {
         builder = builder.with_client_subnet(subnet);

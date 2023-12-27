@@ -3,44 +3,43 @@ use std::{
     collections::HashMap,
     io::{self, ErrorKind},
     mem,
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     os::unix::io::{AsRawFd, FromRawFd, IntoRawFd},
     ptr,
     time::{Duration, Instant},
 };
 
-use socket2::Socket;
-use tokio::net::{TcpSocket, TcpStream};
-use tracing::error;
+use socket2::{Domain, Protocol, Socket, Type};
+use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 
-use crate::net::{
-    sys::{set_common_sockopt_after_connect, set_common_sockopt_for_connect},
-    ConnectOpts,
+use crate::{
+    log::*,
+    net::{
+        sys::{set_common_sockopt_after_connect, set_common_sockopt_for_connect, socket_bind_dual_stack},
+        AddrFamily, ConnectOpts,
+    },
 };
 
-pub(crate) async fn connect_tcp_with_opts_impl(
-    addr: SocketAddr,
-    opts: &ConnectOpts,
-) -> io::Result<TcpStream> {
-    let socket = if opts.tcp.mptcp {
+pub(crate) async fn create_tcp_stream_impl(server_addr: SocketAddr, conn_opts: &ConnectOpts) -> io::Result<TcpStream> {
+    let socket = if conn_opts.tcp.mptcp {
         create_mptcp_socket()?
     } else {
-        match addr {
+        match server_addr {
             SocketAddr::V4(..) => TcpSocket::new_v4()?,
             SocketAddr::V6(..) => TcpSocket::new_v6()?,
         }
     };
 
     // Binds to a specific network interface (device)
-    if let Some(ref iface) = opts.bind_interface {
-        set_ip_bound_if(&socket, &addr, iface)?;
+    if let Some(ref iface) = conn_opts.bind_interface {
+        set_ip_bound_if(&socket, &server_addr, iface)?;
     }
 
-    set_common_sockopt_for_connect(addr, &socket, opts)?;
+    set_common_sockopt_for_connect(server_addr, &socket, conn_opts)?;
 
-    let stream = socket.connect(addr).await?;
+    let stream = socket.connect(server_addr).await?;
 
-    set_common_sockopt_after_connect(&stream, opts)?;
+    set_common_sockopt_after_connect(&stream, conn_opts)?;
 
     Ok(stream)
 }
@@ -92,9 +91,7 @@ fn find_interface_index_cached(iface: &str) -> io::Result<u32> {
     }
 
     INTERFACE_INDEX_CACHE.with(|cache| {
-        cache
-            .borrow_mut()
-            .insert(iface.to_owned(), (index, Instant::now()));
+        cache.borrow_mut().insert(iface.to_owned(), (index, Instant::now()));
     });
 
     Ok(index)
@@ -135,4 +132,37 @@ fn set_ip_bound_if<S: AsRawFd>(socket: &S, addr: &SocketAddr, iface: &str) -> io
     }
 
     Ok(())
+}
+
+pub(crate) async fn bind_udp_socket_impl(bind_addr: &SocketAddr, conn_opts: &ConnectOpts) -> io::Result<UdpSocket> {
+    let af: AddrFamily = From::from(bind_addr);
+
+    let socket = if af != AddrFamily::IPv6 {
+        UdpSocket::bind(bind_addr).await?
+    } else {
+        let socket = Socket::new(Domain::for_address(*bind_addr), Type::DGRAM, Some(Protocol::UDP))?;
+        socket_bind_dual_stack(&socket, &bind_addr, false)?;
+
+        // UdpSocket::from_std requires socket to be non-blocking
+        socket.set_nonblocking(true)?;
+        UdpSocket::from_std(socket.into())?
+    };
+
+    // Set IP_BOUND_IF for BSD-like
+    if let Some(ref iface) = conn_opts.bind_interface {
+        set_ip_bound_if(&socket, bind_addr, iface)?;
+    }
+
+    Ok(socket)
+}
+
+pub(crate) async fn create_udp_socket_impl(af: AddrFamily, conn_opts: &ConnectOpts) -> io::Result<UdpSocket> {
+    let bind_addr = match (af, conn_opts.bind_local_addr) {
+        (AddrFamily::IPv4, Some(IpAddr::V4(ip))) => SocketAddr::new(ip.into(), 0),
+        (AddrFamily::IPv6, Some(IpAddr::V6(ip))) => SocketAddr::new(ip.into(), 0),
+        (AddrFamily::IPv4, _) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+        (AddrFamily::IPv6, _) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+    };
+
+    bind_udp_socket_impl(&bind_addr, conn_opts).await
 }

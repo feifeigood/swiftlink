@@ -6,9 +6,8 @@ use std::{
 use cfg_if::cfg_if;
 use socket2::{SockAddr, Socket};
 use tokio::net::TcpSocket;
-use tracing::{debug, warn};
 
-use super::ConnectOpts;
+use crate::{log::*, net::options::ConnectOpts};
 
 cfg_if! {
     if #[cfg(unix)] {
@@ -20,13 +19,9 @@ cfg_if! {
     }
 }
 
-fn set_common_sockopt_for_connect(
-    addr: SocketAddr,
-    socket: &TcpSocket,
-    opts: &ConnectOpts,
-) -> io::Result<()> {
+fn set_common_sockopt_for_connect(addr: SocketAddr, socket: &TcpSocket, conn_opts: &ConnectOpts) -> io::Result<()> {
     // Binds to IP address
-    if let Some(ip) = opts.bind_local_addr {
+    if let Some(ip) = conn_opts.bind_local_addr {
         match (ip, addr.ip()) {
             (IpAddr::V4(..), IpAddr::V4(..)) => {
                 socket.bind(SocketAddr::new(ip, 0))?;
@@ -39,12 +34,12 @@ fn set_common_sockopt_for_connect(
     }
 
     // Set `SO_SNDBUF`
-    if let Some(buf_size) = opts.tcp.send_buffer_size {
+    if let Some(buf_size) = conn_opts.tcp.send_buffer_size {
         socket.set_send_buffer_size(buf_size)?;
     }
 
     // Set `SO_RCVBUF`
-    if let Some(buf_size) = opts.tcp.recv_buffer_size {
+    if let Some(buf_size) = conn_opts.tcp.recv_buffer_size {
         socket.set_recv_buffer_size(buf_size)?;
     }
 
@@ -89,11 +84,7 @@ where
     result
 }
 
-fn socket_bind_dual_stack_inner(
-    socket: &Socket,
-    addr: &SocketAddr,
-    ipv6_only: bool,
-) -> io::Result<()> {
+fn socket_bind_dual_stack_inner(socket: &Socket, addr: &SocketAddr, ipv6_only: bool) -> io::Result<()> {
     let saddr = SockAddr::from(*addr);
 
     if ipv6_only {
@@ -102,10 +93,7 @@ fn socket_bind_dual_stack_inner(
         socket.bind(&saddr)?;
     } else {
         if let Err(err) = socket.set_only_v6(false) {
-            warn!(
-                "failed to set IPV6_V6ONLY: false for socket, error: {}",
-                err
-            );
+            warn!("failed to set IPV6_V6ONLY: false for socket, error: {}", err);
 
             // This is not a fatal error, just warn and skip
         }

@@ -42,6 +42,7 @@ use connection_provider::TokioCustomeRuntimeProvider;
 #[derive(Default)]
 pub struct DnsClientBuilder {
     resolver_opts: ResolverOpts,
+    connect_opts: ConnectOpts,
     server_infos: Vec<NameServerInfo>,
     ca_file: Option<PathBuf>,
     ca_path: Option<PathBuf>,
@@ -80,9 +81,15 @@ impl DnsClientBuilder {
         self
     }
 
+    pub fn with_connect_opts(mut self, connect_opts: ConnectOpts) -> Self {
+        self.connect_opts = connect_opts;
+        self
+    }
+
     pub async fn build(self) -> DnsClient {
         let DnsClientBuilder {
             resolver_opts,
+            connect_opts,
             server_infos,
             ca_file,
             ca_path,
@@ -137,11 +144,12 @@ impl DnsClientBuilder {
                             &bootstrap_infos,
                             &Default::default(),
                             client_subnet,
+                            connect_opts.clone(),
                         )
                         .await;
                     BootstrapResolver::new(new_resolver.into())
                 } else {
-                    BootstrapResolver::from_system_conf()
+                    BootstrapResolver::from_system_conf(connect_opts.clone())
                 }
                 .into();
 
@@ -159,7 +167,7 @@ impl DnsClientBuilder {
                 debug!("initialize nameserver group {:?}", server_infos);
                 Arc::new(
                     factory
-                        .create_name_server_group(&server_infos, &proxies, client_subnet)
+                        .create_name_server_group(&server_infos, &proxies, client_subnet, connect_opts)
                         .await,
                 )
             }
@@ -184,10 +192,7 @@ impl DnsClient {
     }
 
     pub async fn lookup_nameserver(&self, name: Name, record_type: RecordType) -> Option<Lookup> {
-        bootstrap::resolver()
-            .await
-            .local_lookup(name, record_type)
-            .await
+        bootstrap::resolver().await.local_lookup(name, record_type).await
     }
 }
 
@@ -287,11 +292,7 @@ impl NameServerFactory {
     ) -> Arc<NameServer> {
         use crate::libdns::resolver::name_server::NameServer as N;
 
-        let key = format!(
-            "{}{:?}",
-            url.to_string(),
-            proxy.as_ref().map(|s| s.to_string()),
-        );
+        let key = format!("{}{:?}", url.to_string(), proxy.as_ref().map(|s| s.to_string()),);
 
         if let Some(ns) = self.cache.read().await.get(&key) {
             return ns.clone();
@@ -313,10 +314,7 @@ impl NameServerFactory {
         ns
     }
 
-    fn create_config_from_url(
-        url: &VerifiedDnsUrl,
-        tls_client_config: TlsClientConfigBundle,
-    ) -> NameServerConfig {
+    fn create_config_from_url(url: &VerifiedDnsUrl, tls_client_config: TlsClientConfigBundle) -> NameServerConfig {
         use crate::libdns::resolver::config::Protocol::*;
 
         let addr = url.addr();
@@ -387,6 +385,7 @@ impl NameServerFactory {
         infos: &[NameServerInfo],
         proxies: &HashMap<String, ProxyConfig>,
         default_client_subnet: Option<ClientSubnet>,
+        connect_opts: ConnectOpts,
     ) -> NameServerGroup {
         let mut servers = vec![];
 
@@ -420,9 +419,7 @@ impl NameServerFactory {
             };
 
             let nameserver_opts = NameServerOpts::new(
-                info.edns_client_subnet
-                    .map(|x| x.into())
-                    .or(default_client_subnet),
+                info.edns_client_subnet.map(|x| x.into()).or(default_client_subnet),
                 resolver.options().clone(),
             );
 
@@ -435,13 +432,8 @@ impl NameServerFactory {
 
             for url in verified_urls {
                 servers.push(
-                    self.create(
-                        &url,
-                        proxy.clone(),
-                        nameserver_opts.clone(),
-                        Default::default(),
-                    )
-                    .await,
+                    self.create(&url, proxy.clone(), nameserver_opts.clone(), connect_opts.clone())
+                        .await,
                 )
             }
         }
@@ -538,23 +530,14 @@ impl GenericResolver for NameServer {
 
         let client_subnet = options.client_subnet.or(self.opts.client_subnet);
 
-        let req = DnsRequest::new(
-            build_message(query, request_options, client_subnet),
-            request_options,
-        );
+        let req = DnsRequest::new(build_message(query, request_options, client_subnet), request_options);
 
         let ns = self.inner.clone();
 
         let res = ns.send(req).first_answer().await?;
 
-        let valid_until = Instant::now()
-            + Duration::from_secs(
-                res.answers()
-                    .iter()
-                    .map(|r| r.ttl())
-                    .min()
-                    .unwrap_or(MAX_TTL) as u64,
-            );
+        let valid_until =
+            Instant::now() + Duration::from_secs(res.answers().iter().map(|r| r.ttl()).min().unwrap_or(MAX_TTL) as u64);
 
         Ok(Lookup::new_with_deadline(
             res.query().unwrap().clone(),
@@ -573,9 +556,7 @@ impl VerifiedDnsUrl {
     }
 
     pub fn addr(&self) -> SocketAddr {
-        self.0
-            .addr()
-            .expect("VerifiedDnsUrl must have socket address.")
+        self.0.addr().expect("VerifiedDnsUrl must have socket address.")
     }
 }
 
@@ -602,11 +583,7 @@ impl std::convert::TryFrom<DnsUrl> for VerifiedDnsUrl {
 /// https://dnsflagday.net/2020/
 const MAX_PAYLOAD_LEN: u16 = 1232;
 
-fn build_message(
-    query: Query,
-    request_options: DnsRequestOptions,
-    client_subnet: Option<ClientSubnet>,
-) -> Message {
+fn build_message(query: Query, request_options: DnsRequestOptions, client_subnet: Option<ClientSubnet>) -> Message {
     // build the message
     let mut message: Message = Message::new();
     // TODO: This is not the final ID, it's actually set in the poll method of DNS future
@@ -639,7 +616,7 @@ mod connection_provider {
 
     use tokio::net::UdpSocket as TokioUdpSocket;
 
-    use swiftlink_infra::net::ConnectOpts;
+    use swiftlink_infra::net::{udp, ConnectOpts};
 
     use crate::{
         libdns::{
@@ -677,11 +654,7 @@ mod connection_provider {
             self.handle.clone()
         }
 
-        fn connect_tcp(
-            &self,
-            server_addr: SocketAddr,
-        ) -> Pin<Box<dyn Send + Future<Output = Result<Self::Tcp>>>> {
-            // TODO: bind interface
+        fn connect_tcp(&self, server_addr: SocketAddr) -> Pin<Box<dyn Send + Future<Output = Result<Self::Tcp>>>> {
             let proxy_config = self.proxy.clone();
             let connect_opts = self.connect_opts.clone();
 
@@ -697,8 +670,9 @@ mod connection_provider {
             local_addr: SocketAddr,
             _server_addr: SocketAddr,
         ) -> Pin<Box<dyn Send + Future<Output = Result<Self::Udp>>>> {
-            // TODO: bind addr
-            Box::pin(TokioUdpSocket::bind(local_addr))
+            let connect_opts = self.connect_opts.clone();
+
+            Box::pin(async move { udp::bind_udp_socket_with_opts(local_addr, &connect_opts).await })
         }
     }
 }
@@ -720,7 +694,7 @@ mod bootstrap {
         let lock = RESOLVER.read().await;
         if lock.is_none() {
             drop(lock);
-            let resolver: Arc<BootstrapResolver> = Arc::new(BootstrapResolver::from_system_conf());
+            let resolver: Arc<BootstrapResolver> = Arc::new(BootstrapResolver::from_system_conf(Default::default()));
             set_resolver(resolver.clone()).await;
             resolver
         } else {
@@ -766,19 +740,15 @@ mod bootstrap {
     }
 
     impl BootstrapResolver<NameServerGroup> {
-        pub fn from_system_conf() -> Self {
+        pub fn from_system_conf(connect_opts: ConnectOpts) -> Self {
             let (resolv_config, resolv_opts) =
                 crate::libdns::resolver::system_conf::read_system_conf().unwrap_or_else(|err| {
                     warn!("read system conf failed, {}", err);
 
                     use crate::preset_ns::{ALIDNS, ALIDNS_IPS, CLOUDFLARE, CLOUDFLARE_IPS};
 
-                    let mut name_servers = NameServerConfigGroup::from_ips_https(
-                        ALIDNS_IPS,
-                        443,
-                        ALIDNS.to_string(),
-                        true,
-                    );
+                    let mut name_servers =
+                        NameServerConfigGroup::from_ips_https(ALIDNS_IPS, 443, ALIDNS.to_string(), true);
                     name_servers.merge(NameServerConfigGroup::from_ips_https(
                         CLOUDFLARE_IPS,
                         443,
@@ -789,10 +759,7 @@ mod bootstrap {
                     let mut resolv_opts = ResolverOpts::default();
                     // TODO: cache_size should configurable?
                     resolv_opts.cache_size = 256;
-                    (
-                        ResolverConfig::from_parts(None, vec![], name_servers),
-                        resolv_opts,
-                    )
+                    (ResolverConfig::from_parts(None, vec![], name_servers), resolv_opts)
                 });
             let mut name_servers = vec![];
 
@@ -801,7 +768,7 @@ mod bootstrap {
                     config.clone(),
                     Default::default(),
                     None,
-                    Default::default(),
+                    connect_opts.clone(),
                 )));
             }
 
@@ -892,13 +859,11 @@ mod tests {
     #[tokio::test]
     async fn test_with_default() {
         let client = DnsClient::builder().build().await;
-        let lookup_ip = client
-            .lookup("dns.alidns.com", RecordType::A)
-            .await
-            .unwrap();
-        assert!(lookup_ip.into_iter().any(|i| i.ip_addr()
-            == Some("223.5.5.5".parse::<IpAddr>().unwrap())
-            || i.ip_addr() == Some("223.6.6.6".parse::<IpAddr>().unwrap())));
+        let lookup_ip = client.lookup("dns.alidns.com", RecordType::A).await.unwrap();
+        assert!(lookup_ip
+            .into_iter()
+            .any(|i| i.ip_addr() == Some("223.5.5.5".parse::<IpAddr>().unwrap())
+                || i.ip_addr() == Some("223.6.6.6".parse::<IpAddr>().unwrap())));
     }
 
     async fn assert_google(client: &DnsClient) {

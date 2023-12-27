@@ -15,10 +15,11 @@ use swiftlink_infra::{
     bind_to,
     cachefile::CacheFile,
     log::{self, *},
+    net::ConnectOpts,
     udp, Listener,
 };
 
-use crate::{conf::Config, context::AppContext, rt};
+use crate::{config::Config, context::AppContext, rt};
 
 pub struct App {
     config: Arc<Config>,
@@ -63,6 +64,9 @@ impl App {
         let listener_map: Arc<RwLock<HashMap<Listener, ServerTasks>>> = Default::default();
         let mut context = AppContext::default();
 
+        let mut connect_opts: ConnectOpts = Default::default();
+        connect_opts.bind_interface = config.interface_name().map(|s| s.to_owned());
+
         {
             let dns = config.dns();
             if dns.enabled() {
@@ -92,7 +96,7 @@ impl App {
             }
 
             runtime.block_on(async {
-                let dns_resolver = build_dns_resolver(&dns).await;
+                let dns_resolver = build_dns_resolver(&dns, &connect_opts).await;
 
                 // register local dns server
                 let listener = dns.listen();
@@ -160,6 +164,7 @@ struct AppGuard {
 
 enum ServerTasks {
     Dns(swiftlink_dns::ServerFuture<ServerHandle>),
+    // Inbound(inbound::InboundServerHandle),
 }
 
 impl ServerTasks {
@@ -168,7 +173,7 @@ impl ServerTasks {
             ServerTasks::Dns(s) => {
                 let _ = s.shutdown_gracefully().await;
                 Ok(())
-            }
+            } // _ => Ok(()),
         }
     }
 }

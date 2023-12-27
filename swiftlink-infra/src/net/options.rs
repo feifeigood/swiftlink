@@ -52,4 +52,7 @@ pub struct ConnectOpts {
 
     /// TCP options
     pub tcp: TcpSocketOpts,
+
+    /// tcp connect timeout
+    pub connect_timeout: Option<Duration>,
 }

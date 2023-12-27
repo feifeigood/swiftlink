@@ -14,9 +14,12 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 mod app;
 mod cli;
-mod conf;
+mod config;
 mod context;
 mod error;
+// mod inbound;
+// mod outbound;
+// mod route;
 mod rt;
 
 /// The app name
@@ -42,6 +45,7 @@ impl Cli {
 
                 let home_dir = home_dir
                     .unwrap_or(dirs::home_dir().expect("Failed to get homedir"))
+                    .join(".config")
                     .join("swiftlink");
 
                 run_server(conf.unwrap_or(home_dir.join("swiftlink.toml")), home_dir);

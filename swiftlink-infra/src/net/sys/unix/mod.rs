@@ -6,10 +6,7 @@ use std::{
 use cfg_if::cfg_if;
 use socket2::{Socket, TcpKeepalive};
 
-use crate::{
-    log,
-    net::{options::TcpSocketOpts, ConnectOpts},
-};
+use crate::net::{options::TcpSocketOpts, ConnectOpts};
 
 cfg_if! {
     if #[cfg(any(target_os = "linux", target_os = "android"))] {
@@ -71,23 +68,15 @@ fn set_tcp_keepalive(socket: &Socket, tcp: &TcpSocketOpts) -> io::Result<()> {
 }
 
 #[inline(always)]
-fn socket_call_warp<S: AsRawFd, F: FnOnce(&Socket) -> io::Result<()>>(
-    stream: &S,
-    f: F,
-) -> io::Result<()> {
+fn socket_call_warp<S: AsRawFd, F: FnOnce(&Socket) -> io::Result<()>>(stream: &S, f: F) -> io::Result<()> {
     let socket = unsafe { Socket::from_raw_fd(stream.as_raw_fd()) };
     let result = f(&socket);
     let _ = socket.into_raw_fd();
     result
 }
 
-pub fn set_common_sockopt_after_connect<S: AsRawFd>(
-    stream: &S,
-    opts: &ConnectOpts,
-) -> io::Result<()> {
-    socket_call_warp(stream, |socket| {
-        set_common_sockopt_after_connect_impl(socket, opts)
-    })
+pub fn set_common_sockopt_after_connect<S: AsRawFd>(stream: &S, opts: &ConnectOpts) -> io::Result<()> {
+    socket_call_warp(stream, |socket| set_common_sockopt_after_connect_impl(socket, opts))
 }
 
 fn set_common_sockopt_after_connect_impl(socket: &Socket, opts: &ConnectOpts) -> io::Result<()> {

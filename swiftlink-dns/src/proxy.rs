@@ -1,7 +1,5 @@
 use anyhow::Context;
-use fast_socks5::{
-    client::Socks5Stream, util::target_addr::ToTargetAddr, AuthenticationMethod, Socks5Command,
-};
+use fast_socks5::{client::Socks5Stream, util::target_addr::ToTargetAddr, AuthenticationMethod, Socks5Command};
 use serde_with::DeserializeFromStr;
 use std::{
     fmt::{Display, Write},
@@ -18,7 +16,7 @@ use url::{ParseError, Url};
 
 use swiftlink_infra::{
     log::info,
-    net::{tcp::connect_tcp_with_opts, ConnectOpts},
+    net::{tcp::crate_tcp_stream_with_opts, ConnectOpts},
 };
 
 pub async fn connect_tcp(
@@ -30,7 +28,7 @@ pub async fn connect_tcp(
     let target_port = server_addr.port();
 
     let create_tcp_stream =
-        |server_addr: SocketAddr| async move { connect_tcp_with_opts(server_addr, opts).await };
+        |server_addr: SocketAddr| async move { crate_tcp_stream_with_opts(server_addr, opts).await };
 
     match proxy {
         Some(proxy) => match proxy.proto {
@@ -39,16 +37,8 @@ pub async fn connect_tcp(
                 let auth = {
                     if proxy.username.is_some() {
                         let auth = AuthenticationMethod::Password {
-                            username: proxy
-                                .username
-                                .as_deref()
-                                .map(|s| s.to_owned())
-                                .unwrap_or_default(),
-                            password: proxy
-                                .password
-                                .as_deref()
-                                .map(|s| s.to_owned())
-                                .unwrap_or_default(),
+                            username: proxy.username.as_deref().map(|s| s.to_owned()).unwrap_or_default(),
+                            password: proxy.password.as_deref().map(|s| s.to_owned()).unwrap_or_default(),
                         };
                         Some(auth)
                     } else {
@@ -56,8 +46,7 @@ pub async fn connect_tcp(
                     }
                 };
 
-                let socks5stream =
-                    upgrade_to_socks5stream(tcp, auth, target_addr, target_port).await;
+                let socks5stream = upgrade_to_socks5stream(tcp, auth, target_addr, target_port).await;
 
                 socks5stream
                     .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
@@ -104,9 +93,7 @@ async fn upgrade_to_socks5stream(
 
     // upgrade the TcpStream to Socks5Stream
     let mut socks_stream = Socks5Stream::use_stream(socket, auth, Default::default()).await?;
-    socks_stream
-        .request(Socks5Command::TCPConnect, target_addr)
-        .await?;
+    socks_stream.request(Socks5Command::TCPConnect, target_addr).await?;
 
     Ok(socks_stream)
 }
@@ -168,20 +155,14 @@ impl tokio::io::AsyncWrite for TcpStream {
         }
     }
 
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), io::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), io::Error>> {
         match self.get_mut() {
             TcpStream::Tokio(s) => Pin::new(s).poll_flush(cx),
             TcpStream::Proxy(s) => Pin::new(s).poll_flush(cx),
         }
     }
 
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), io::Error>> {
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), io::Error>> {
         match self.get_mut() {
             TcpStream::Tokio(s) => Pin::new(s).poll_shutdown(cx),
             TcpStream::Proxy(s) => Pin::new(s).poll_shutdown(cx),
