@@ -3,3 +3,5 @@ edition = "2021"
 # Activation of features, almost objectively better ;)
 use_try_shorthand = true
 use_field_init_shorthand = true
+
+max_width = 120
