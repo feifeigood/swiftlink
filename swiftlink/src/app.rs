@@ -1,29 +1,36 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
+    str::FromStr,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use anyhow::Context;
+use anyhow::Context as AContext;
 use futures_util::future::join_all;
-use tokio::{runtime::Runtime, sync::RwLock};
+use tokio::{
+    runtime::Runtime,
+    sync::{mpsc, RwLock},
+};
 
-use swiftlink_dns::build_dns_resolver;
-use swiftlink_dns::{ServerHandle, ServerHandleBuilder};
+use swiftlink_dns::{build_dns_resolver, ServerHandle, ServerHandleBuilder};
 use swiftlink_infra::{
     bind_to,
     cachefile::CacheFile,
     log::{self, *},
     net::ConnectOpts,
-    udp, Listener,
+    tcp, udp, Listener,
 };
 
-use crate::{config::Config, context::AppContext, rt};
+use crate::{
+    config::Config,
+    context::{InboundConnection, ServiceContext},
+    inbound::{self, socks::Socks},
+    rt,
+};
 
 pub struct App {
     config: Arc<Config>,
-    context: AppContext,
     listener_map: Arc<RwLock<HashMap<Listener, ServerTasks>>>,
     runtime: Runtime,
     guard: AppGuard,
@@ -62,11 +69,19 @@ impl App {
 
         let runtime = rt::build();
         let listener_map: Arc<RwLock<HashMap<Listener, ServerTasks>>> = Default::default();
-        let mut context = AppContext::default();
+
+        let (tcp_in_tx, mut tcp_in_rx) = mpsc::channel::<InboundConnection>(200);
+
+        let authenticator = Arc::new(config.authentication().map(|x| x.to_owned()));
+
+        let mut context = ServiceContext::new();
 
         let mut connect_opts: ConnectOpts = Default::default();
         connect_opts.bind_interface = config.interface_name().map(|s| s.to_owned());
 
+        // create outbound manager
+
+        // local dns server
         {
             let dns = config.dns();
             if dns.enabled() {
@@ -122,9 +137,37 @@ impl App {
             });
         }
 
+        let context = Arc::new(context);
+
+        // local socks server
+        {
+            if config.socks_port() > 0 {
+                let listener = Listener::from_str(format!(":{}", config.socks_port()).as_str())?;
+
+                runtime.block_on(async {
+                    let tcp_listener = bind_to(tcp, listener.sock_addr(), listener.device(), "SOCKS5 TCP");
+                    let udp_socket = bind_to(udp, listener.sock_addr(), listener.device(), "SOCKS5 UDP");
+
+                    let mut builder = Socks::builder(context.clone(), tcp_in_tx.clone());
+                    builder.set_authenticator(authenticator);
+
+                    let server = builder.build().serve(tcp_listener, udp_socket);
+
+                    if let Some(mut prev_server) = listener_map
+                        .write()
+                        .await
+                        .insert(listener.clone(), ServerTasks::Inbound(server))
+                    {
+                        tokio::spawn(async move {
+                            let _ = prev_server.shutdown(Duration::from_secs(5)).await;
+                        });
+                    }
+                });
+            }
+        }
+
         Ok(Self {
             config,
-            context,
             listener_map,
             runtime,
             guard,
@@ -164,7 +207,7 @@ struct AppGuard {
 
 enum ServerTasks {
     Dns(swiftlink_dns::ServerFuture<ServerHandle>),
-    // Inbound(inbound::InboundServerHandle),
+    Inbound(inbound::ServerHandle),
 }
 
 impl ServerTasks {
@@ -173,7 +216,11 @@ impl ServerTasks {
             ServerTasks::Dns(s) => {
                 let _ = s.shutdown_gracefully().await;
                 Ok(())
-            } // _ => Ok(()),
+            }
+            ServerTasks::Inbound(s) => {
+                let _ = s.shutdown_gracefully().await;
+                Ok(())
+            }
         }
     }
 }

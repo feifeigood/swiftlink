@@ -19,13 +19,8 @@ pub struct TlsClientConfigBundle {
 
 impl TlsClientConfigBundle {
     pub fn new(ca_path: Option<PathBuf>, ca_file: Option<PathBuf>) -> Self {
-        let config = Self::create_tls_client_config(
-            [ca_path, ca_file]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .as_slice(),
-        );
+        let config =
+            Self::create_tls_client_config([ca_path, ca_file].into_iter().flatten().collect::<Vec<_>>().as_slice());
 
         let sni_off = {
             let mut sni_off = config.clone();
@@ -71,13 +66,11 @@ impl TlsClientConfigBundle {
         const ALPN_H2: &[u8] = b"h2";
 
         let mut root_store = RootCertStore::empty();
-        root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-            OwnedTrustAnchor::from_subject_spki_name_constraints(
-                ta.subject,
-                ta.spki,
-                ta.name_constraints,
-            )
-        }));
+        root_store.add_trust_anchors(
+            webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
+                OwnedTrustAnchor::from_subject_spki_name_constraints(ta.subject, ta.spki, ta.name_constraints)
+            }),
+        );
 
         let certs = {
             let certs1 = rustls_native_certs::load_native_certs().unwrap_or_else(|err| {
@@ -100,11 +93,9 @@ impl TlsClientConfigBundle {
         };
 
         for cert in certs {
-            root_store
-                .add(&rustls::Certificate(cert.0))
-                .unwrap_or_else(|err| {
-                    warn!("load certs from path failed.{}", err);
-                })
+            root_store.add(&rustls::Certificate(cert.0)).unwrap_or_else(|err| {
+                warn!("load certs from path failed.{}", err);
+            })
         }
 
         let mut client_config = ClientConfig::builder()

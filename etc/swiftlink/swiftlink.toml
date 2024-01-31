@@ -1,3 +1,5 @@
+port = 7890
+socks_port = 7891
 interface_name = "en0"
 ipv6_first = true
 geoip_location = "GeoIP2-Country.mmdb"
@@ -7,13 +9,32 @@ log_level = "trace"
 log_max_file_size = "10mb"
 log_files = 3
 
+# authentication = ["username1:password1", "username2:password2"]
+
+rules = [
+    "DOMAIN,www.google.com,proxy",
+    "DOMAIN-SUFFIX,google.com,proxy",
+    "DOMAIN-KEYWORD,google,proxy",
+    "IP-CIDR,192.168.0.0/24,proxy",
+    "PROCESS-PATH,Chrome,DIRECT",
+    "MATCH,DIRECT",
+]
+
 [dns]
 enable = true
 listen = "0.0.0.0:53"
 nameserver = ["223.5.5.5", "8.8.8.8", "cloudflare-dns.com"]
-fake_ip = true
+fake_ip = false
 fake_ip_size = 2048
 fake_ip_persist = true
 fake_ip_range = "198.18.0.0/15"
 fake_ip6_range = "fc00::/18"
-fake_ip_filter = ["zenlayer.com", ".zenlayer.com"]
+fake_ip_filter = ["abc.com", ".abc.com"]
+
+[[proxies]]
+name = "trojan"
+type = "trojan"
+server = "1.1.1.1"
+port = 443
+password = "123456"
+sni = "trojan.example.com"

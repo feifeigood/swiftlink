@@ -72,14 +72,8 @@ pub fn bind_to<T>(
     })
 }
 
-pub fn tcp(
-    sock_addr: SocketAddr,
-    bind_device: Option<&str>,
-    bind_type: &str,
-) -> io::Result<tokio::net::TcpListener> {
-    let device_note = bind_device
-        .map(|device| format!("@{device}"))
-        .unwrap_or_default();
+pub fn tcp(sock_addr: SocketAddr, bind_device: Option<&str>, bind_type: &str) -> io::Result<tokio::net::TcpListener> {
+    let device_note = bind_device.map(|device| format!("@{device}")).unwrap_or_default();
 
     debug!("binding {} to {:?}{}", bind_type, sock_addr, device_note);
 
@@ -105,23 +99,15 @@ pub fn tcp(
     info!(
         "listening for {} on {:?}{}",
         bind_type,
-        tcp_listener
-            .local_addr()
-            .expect("could not lookup local address"),
+        tcp_listener.local_addr().expect("could not lookup local address"),
         device_note
     );
 
     Ok(tcp_listener)
 }
 
-pub fn udp(
-    sock_addr: SocketAddr,
-    bind_device: Option<&str>,
-    bind_type: &str,
-) -> io::Result<tokio::net::UdpSocket> {
-    let device_note = bind_device
-        .map(|device| format!("@{device}"))
-        .unwrap_or_default();
+pub fn udp(sock_addr: SocketAddr, bind_device: Option<&str>, bind_type: &str) -> io::Result<tokio::net::UdpSocket> {
+    let device_note = bind_device.map(|device| format!("@{device}")).unwrap_or_default();
 
     debug!("binding {} to {:?}{}", bind_type, sock_addr, device_note);
     let udp_socket = std::net::UdpSocket::bind(sock_addr)?;
@@ -147,9 +133,7 @@ pub fn udp(
     info!(
         "listening for {} on {:?}{}",
         bind_type,
-        udp_socket
-            .local_addr()
-            .expect("could not lookup local address"),
+        udp_socket.local_addr().expect("could not lookup local address"),
         device_note
     );
 
