@@ -10,10 +10,12 @@ use std::{
 };
 
 use swiftlink_dns::DnsConfig;
-use swiftlink_infra::{file_mode::FileMode, log::info};
+use swiftlink_infra::{auth::Authenticator, file_mode::FileMode, log::info};
 
 #[derive(Deserialize, Default)]
 pub struct Config {
+    port: u16,
+    socks_port: u16,
     interface_name: Option<String>,
     ipv6_first: bool,
 
@@ -24,10 +26,15 @@ pub struct Config {
     log_max_file_size: Option<Byte>,
     log_files: Option<u64>,
 
-    #[serde(deserialize_with = "deserialize::from_str_to_rule")]
+    #[serde(default, deserialize_with = "deserialize::from_str_to_auth")]
+    authentication: Option<Authenticator>,
+
+    #[serde(default, deserialize_with = "deserialize::from_str_to_rule")]
     rules: Option<Vec<Rule>>,
 
     dns: DnsConfig,
+
+    proxies: Option<Vec<Proxy>>,
 
     // Hold source path for config reload
     #[serde(skip)]
@@ -55,6 +62,21 @@ impl Config {
     pub fn summary(&self) {
         // TODO: print config summary
         info!("Using configuration file: {:?}", self.source_conf_path);
+    }
+
+    #[inline]
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    #[inline]
+    pub fn socks_port(&self) -> u16 {
+        self.socks_port
+    }
+
+    #[inline]
+    pub fn authentication(&self) -> Option<&Authenticator> {
+        self.authentication.as_ref()
     }
 
     #[inline]
@@ -124,6 +146,34 @@ impl Config {
     pub fn interface_name(&self) -> Option<&str> {
         self.interface_name.as_deref()
     }
+
+    #[inline]
+    pub fn proxies(&self) -> Option<&Vec<Proxy>> {
+        self.proxies.as_ref()
+    }
+}
+
+#[derive(Deserialize, Default)]
+pub struct Proxy {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub protocol: String,
+
+    // common field
+    pub server: Option<String>,
+    pub port: Option<u16>,
+
+    // TODO: shadowsocks
+
+    // shadowsocks, trojan
+    pub password: Option<String>,
+
+    // trojan
+    pub sni: Option<String>,
+
+    // tls
+    #[serde(default)]
+    pub skip_cert_verify: bool,
 }
 
 #[derive(Debug)]
@@ -144,7 +194,7 @@ impl FromStr for Rule {
             2 => (parts[0].clone(), "".into(), parts[1].clone(), vec![]),
             3 => (parts[0].clone(), parts[1].clone(), parts[2].clone(), vec![]),
             n if n >= 4 => (parts[0].clone(), parts[1].clone(), parts[2].clone(), parts[2..n].into()),
-            _ => return Err(s.to_string()),
+            _ => return Err(format!("invalid rule: {}", s)),
         };
 
         Ok(Self {
@@ -158,6 +208,7 @@ impl FromStr for Rule {
 
 mod deserialize {
     use serde::{de, Deserialize, Deserializer};
+    use swiftlink_infra::auth::AuthUser;
 
     use super::*;
 
@@ -173,7 +224,23 @@ mod deserialize {
             .collect::<Result<Vec<Rule>, String>>()
         {
             Ok(x) => Ok(Some(x)),
-            Err(s) => Err(de::Error::custom(format!("deserialize rule error:{}", s))),
+            Err(s) => Err(de::Error::custom(format!("deserialize rule error: {}", s))),
+        }
+    }
+
+    pub(super) fn from_str_to_auth<'de, D>(deserializer: D) -> Result<Option<Authenticator>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw: Vec<String> = Vec::deserialize(deserializer)?;
+
+        match raw
+            .iter()
+            .map(|x| x.parse::<AuthUser>())
+            .collect::<Result<Vec<AuthUser>, String>>()
+        {
+            Ok(users) => Ok(Some(Authenticator::new(users))),
+            Err(s) => Err(de::Error::custom(format!("deserialize authentication error: {}", s))),
         }
     }
 }

@@ -16,10 +16,11 @@ mod app;
 mod cli;
 mod config;
 mod context;
+mod dispatcher;
 mod error;
-// mod inbound;
-// mod outbound;
-// mod route;
+mod inbound;
+mod outbound;
+mod route;
 mod rt;
 
 /// The app name
