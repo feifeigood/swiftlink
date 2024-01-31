@@ -30,7 +30,6 @@ fake_ip_persist = true
 fake_ip_range = "198.18.0.0/15"
 fake_ip6_range = "fc00::/18"
 fake_ip_filter = ["abc.com", ".abc.com"]
-fake_ip_filter = ["zenlayer.com", ".zenlayer.com"]
 
 [[proxies]]
 name = "trojan"
